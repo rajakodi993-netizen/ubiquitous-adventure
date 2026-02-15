@@ -1,0 +1,49 @@
+# Environment & credentials
+.env
+.env.bak
+data/cookies.txt
+data/cookies.bak
+
+# Source code (disimpan di GitHub Secrets)
+*.py
+data/*.py
+data/tiktok_accounts.json
+src_backup/
+add-secrets.ps1
+secret_*.txt
+gate.sh
+
+# PyArmor artifacts
+dist/
+pyarmor_runtime_000000/
+
+# Logs
+logs/
+*.log
+
+# Videos & upload state
+videos/
+uploaded/
+failed/
+uploader_state.json
+
+# Archive (disimpan via Actions Cache, bukan di repo)
+archive/
+archive.zip
+arsip_ACPN.zip
+
+# Backup files
+*.bak
+*- Copy.py
+
+# Lock files
+data/lock/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
