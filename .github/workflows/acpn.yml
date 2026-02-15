@@ -40,7 +40,7 @@ jobs:
           mkdir -p data
           echo "${{ secrets.UPLOAD_EXEC_PY }}" | base64 -d > data/upload_exec.py
           echo "${{ secrets.UPLOAD_FALLBACK_PY }}" | base64 -d > data/upload_fallback.py
-          echo "${{ secrets.TIKTOK_ACCOUNTS }}" | base64 -d > data/tiktok_accounts.json
+          echo '${{ vars.TIKTOK_ACCOUNTS }}' > data/tiktok_accounts.json
 
       - name: Decode cookies
         run: |
