@@ -10,6 +10,10 @@ on:
         description: "Maksimum jumlah video per run"
         required: false
         default: "150"
+      reset_user:
+        description: "Username untuk reset arsip (force re-download)"
+        required: false
+        default: ""
 
 jobs:
   download:
@@ -30,6 +34,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install yt-dlp
+          npm install
 
       - name: Install ffmpeg
         run: sudo apt-get install -y -qq ffmpeg

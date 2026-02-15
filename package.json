@@ -1,0 +1,9 @@
+{
+  "name": "acpn-bot",
+  "version": "1.0.0",
+  "description": "TikTok Downloader Helper",
+  "main": "data/get_photos.js",
+  "dependencies": {
+    "@tobyg74/tiktok-api-dl": "latest"
+  }
+}
