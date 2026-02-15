@@ -2,8 +2,8 @@ name: ACPN Downloader
 
 on:
   schedule:
-    # Setiap 6 jam: 00:00, 06:00, 12:00, 18:00 UTC
-    - cron: "0 */6 * * *"
+    # Setiap 2 jam
+    - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       limit:
