@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install yt-dlp
+          pip install yt-dlp gallery-dl
 
       - name: Install ffmpeg
         run: sudo apt-get install -y -qq ffmpeg
