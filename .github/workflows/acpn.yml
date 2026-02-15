@@ -40,7 +40,11 @@ jobs:
           mkdir -p data
           echo "${{ secrets.UPLOAD_EXEC_PY }}" | base64 -d > data/upload_exec.py
           echo "${{ secrets.UPLOAD_FALLBACK_PY }}" | base64 -d > data/upload_fallback.py
-          echo '${{ vars.TIKTOK_ACCOUNTS }}' > data/tiktok_accounts.json
+
+      - name: Fetch daftar akun TikTok
+        run: |
+          curl -sL "${{ vars.TIKTOK_ACCOUNTS }}" -o data/tiktok_accounts.json
+          echo "📋 $(python -c 'import json; print(len(json.load(open("data/tiktok_accounts.json"))))') akun dimuat"
 
       - name: Decode cookies
         run: |
@@ -67,7 +71,7 @@ jobs:
           DUMP_BOT: ${{ secrets.DUMP_BOT }}
           SLEEP_SECONDS: "5"
         run: |
-          LIMIT="${{ github.event.inputs.limit || '30' }}"
+          LIMIT="${{ github.event.inputs.limit || '150' }}"
           python ACPN.py --limit "$LIMIT"
 
       - name: Save archive cache
