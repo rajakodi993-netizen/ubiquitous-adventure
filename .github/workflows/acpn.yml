@@ -43,7 +43,12 @@ jobs:
 
       - name: Fetch daftar akun TikTok
         run: |
-          curl -sL "${{ vars.TIKTOK_ACCOUNTS }}" -o data/tiktok_accounts.json
+          CONTENT='${{ secrets.TIKTOK_ACCOUNTS }}'
+          if [[ "$CONTENT" == http* ]]; then
+            curl -sL "$CONTENT" -o data/tiktok_accounts.json
+          else
+            echo "$CONTENT" > data/tiktok_accounts.json
+          fi
           echo "📋 $(python -c 'import json; print(len(json.load(open("data/tiktok_accounts.json"))))') akun dimuat"
 
       - name: Decode cookies
