@@ -71,7 +71,7 @@ jobs:
           echo "[\"$URL\"]" > data/tiktok_accounts.json
           echo "🎯 Target: $URL"
 
-      - name: Run ACPN (Debug Mode)
+      - name: Run ACPN (Video)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
@@ -82,6 +82,16 @@ jobs:
         run: |
           # Override limit jadi user input atau default 0 (unlimited for debug)
           python ACPN.py --limit 0
+
+      - name: Run Gallery Worker (Photo)
+        if: always()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
+          UPLOAD_CHANNEL_ID: ${{ secrets.UPLOAD_CHANNEL_ID }}
+          SLEEP_SECONDS: "1"
+        run: |
+          python gallery_worker.py --limit 0
 
       - name: Save archive cache
         uses: actions/cache/save@v4

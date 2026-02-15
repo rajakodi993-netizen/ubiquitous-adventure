@@ -10,10 +10,6 @@ on:
         description: "Maksimum jumlah video per run"
         required: false
         default: "150"
-      reset_user:
-        description: "Username untuk reset arsip (force re-download)"
-        required: false
-        default: ""
 
 jobs:
   download:
@@ -33,8 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install yt-dlp
-          npm install
+          pip install yt-dlp gallery-dl
 
       - name: Install ffmpeg
         run: sudo apt-get install -y -qq ffmpeg
@@ -48,7 +43,7 @@ jobs:
 
       - name: Fetch daftar akun TikTok
         run: |
-          curl -sL "${{ secrets.TIKTOK_ACCOUNTS }}" -o data/tiktok_accounts.json
+          curl -sL "${{ vars.TIKTOK_ACCOUNTS }}" -o data/tiktok_accounts.json
           echo "📋 $(python -c 'import json; print(len(json.load(open("data/tiktok_accounts.json"))))') akun dimuat"
 
       - name: Decode cookies
@@ -67,7 +62,7 @@ jobs:
       - name: Create directories
         run: mkdir -p videos archive logs data/lock
 
-      - name: Run ACPN
+      - name: Run ACPN (Video)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
@@ -78,6 +73,17 @@ jobs:
         run: |
           LIMIT="${{ github.event.inputs.limit || '150' }}"
           python ACPN.py --limit "$LIMIT"
+
+      - name: Run Gallery Worker (Photo)
+        if: always()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
+          UPLOAD_CHANNEL_ID: ${{ secrets.UPLOAD_CHANNEL_ID }}
+          SLEEP_SECONDS: "5"
+        run: |
+          # Limit gallery worker? Default 0 (process all new)
+          python gallery_worker.py
 
       - name: Save archive cache
         uses: actions/cache/save@v4
