@@ -135,7 +135,7 @@ def process_gallery(url: str, limit: int = 0):
     if not os.path.exists(user_photo_dir): return
     
     current_files = set(os.listdir(user_photo_dir))
-    new_files = sorted(current_files - existing_files)
+    new_files = sorted(current_files - existing_photos)
     
     # Filter only images
     new_photos = [f for f in new_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
