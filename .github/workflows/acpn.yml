@@ -32,7 +32,14 @@ jobs:
           pip install yt-dlp
 
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: |
+          if command -v ffmpeg &>/dev/null; then
+            echo "✅ ffmpeg sudah ada: $(ffmpeg -version | head -1)"
+          else
+            echo "📥 Download ffmpeg static binary..."
+            curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ --strip-components=1 -C /usr/local/bin/ --wildcards '*/ffmpeg' '*/ffprobe'
+            echo "✅ ffmpeg installed: $(ffmpeg -version | head -1)"
+          fi
 
       - name: Decode scripts dari Secrets
         run: |
