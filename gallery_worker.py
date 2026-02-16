@@ -63,7 +63,7 @@ def tg_media_group(media_files: list, caption: str = "") -> bool:
             retry = int(r.headers.get("Retry-After", "10"))
             logger.warning(f"Rate limited. Menunggu {retry}s...")
             time.sleep(retry)
-            return False 
+            return tg_media_group(media_files, caption) # Retry recursive
         r.raise_for_status()
         return True
     except Exception as e:
@@ -198,7 +198,7 @@ def process_gallery(url: str, limit: int = 0):
             else:
                 logger.error(f"Failed to send album {pid}")
             
-            time.sleep(3)
+            time.sleep(5)
 
 def main():
     import argparse
