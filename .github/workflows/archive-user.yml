@@ -37,7 +37,6 @@ jobs:
       - name: Decode scripts & secrets
         run: |
           mkdir -p data
-          echo "${{ secrets.UPLOAD_EXEC_PY }}" | base64 -d > data/upload_exec.py
           echo "${{ secrets.UPLOAD_FALLBACK_PY }}" | base64 -d > data/upload_fallback.py
           echo "${{ secrets.TT_COOKIES_B64 }}" | base64 -d > data/cookies.txt
 
