@@ -1,0 +1,96 @@
+name: Archive User (Whole Account)
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: "Username TikTok (tanpa @), contoh: piaasrgh"
+        required: true
+      reset_archive:
+        description: "Hapus arsip sebelumnya? (PERINGATAN: Akan download ulang SEMUA)"
+        type: boolean
+        default: false
+
+jobs:
+  archive-user:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 Jam (untuk akun besar)
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install yt-dlp gallery-dl
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y -qq ffmpeg
+
+      - name: Decode scripts & secrets
+        run: |
+          mkdir -p data
+          echo "${{ secrets.UPLOAD_EXEC_PY }}" | base64 -d > data/upload_exec.py
+          echo "${{ secrets.UPLOAD_FALLBACK_PY }}" | base64 -d > data/upload_fallback.py
+          echo "${{ secrets.TT_COOKIES_B64 }}" | base64 -d > data/cookies.txt
+
+      - name: Restore archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: archive/
+          key: acpn-archive-${{ github.run_id }}
+          restore-keys: |
+            acpn-archive-
+
+      - name: Reset Archive (If requested)
+        if: ${{ inputs.reset_archive }}
+        run: |
+          USERNAME="${{ inputs.username }}"
+          echo "🗑️ Menghapus arsip untuk @$USERNAME..."
+          rm -f "archive/${USERNAME}_ACPN.txt"
+          rm -f "archive/${USERNAME}_photos.txt"
+          ls -l archive/ | grep "$USERNAME" || echo "Archive deleted."
+
+      - name: Setup Target User
+        run: |
+          # Buat tiktok_accounts.json isinya cuma 1 user ini
+          USERNAME="${{ inputs.username }}"
+          URL="https://www.tiktok.com/@$USERNAME"
+          echo "[\"$URL\"]" > data/tiktok_accounts.json
+          echo "🎯 Target: $URL"
+
+      - name: Run ACPN (Video - Unlimited)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
+          UPLOAD_CHANNEL_ID: ${{ secrets.UPLOAD_CHANNEL_ID }}
+          DUMP_CHANNEL_ID: ${{ secrets.DUMP_CHANNEL_ID }}
+          DUMP_BOT: ${{ secrets.DUMP_BOT }}
+          SLEEP_SECONDS: "2"
+        run: |
+          # Limit 0 = Unlimited (download semua yang belum ada)
+          python ACPN.py --limit 0
+
+      - name: Run Gallery Worker (Photo - Unlimited)
+        if: always()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
+          UPLOAD_CHANNEL_ID: ${{ secrets.UPLOAD_CHANNEL_ID }}
+          SLEEP_SECONDS: "5"
+        run: |
+          python gallery_worker.py --limit 0
+
+      - name: Save archive cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: archive/
+          key: acpn-archive-${{ github.run_id }}
