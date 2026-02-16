@@ -79,7 +79,7 @@ jobs:
           python ACPN.py --limit "$LIMIT"
 
       - name: Run Gallery Worker (Photo)
-        if: always()
+        if: false # DISABLED TEMPORARILY (Timeout Issue)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
