@@ -158,7 +158,7 @@ def process_gallery(url: str, limit: int = 0) -> int:
         sys.executable, "-m", "gallery_dl", url,
         "--cookies", TT_COOKIES,
         "--download-archive", photo_archive,
-        "--filter", "extension in ('jpg', 'jpeg', 'png', 'webp')", # Removed mp3, m4a
+        "--filter", "extension in ('jpg', 'jpeg', 'png', 'webp') and date >= datetime(2026, 2, 1)", # Filter Date & Ext
         "--no-skip",
         "--write-metadata",
         "-D", user_photo_dir,
