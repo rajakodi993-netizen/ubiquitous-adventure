@@ -10,6 +10,8 @@ import pathlib
 import subprocess
 import requests
 import html
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 # === ENV ===
@@ -28,7 +30,7 @@ SLEEP_SECONDS = int(os.getenv('SLEEP_SECONDS', '5'))
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(LOG_FILE)
@@ -37,18 +39,28 @@ logging.basicConfig(
 logger = logging.getLogger('gallery_worker')
 
 # === TELEGRAM ===
+tg_lock = threading.Lock() # Lock for text messages to avoid interleaving
+
 def tg_message(text: str) -> bool:
     channel = NOTIF_CHANNEL_ID
     if not (BOT_TOKEN and channel):
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, data={"chat_id": channel, "text": text}, timeout=10)
-        if r.status_code == 429:
-             time.sleep(int(r.headers.get("Retry-After", 5)))
-             return tg_message(text)
-        r.raise_for_status()
-        return True
+        with tg_lock:
+            # Simple retry if 429
+            r = requests.post(url, data={"chat_id": channel, "text": text}, timeout=10)
+            if r.status_code == 429:
+                time.sleep(int(r.headers.get("Retry-After", 5)))
+                # Call directly (recursive) inside lock is fine
+                # But better to just loop? requests.post is blocking.
+                # Recursive is easier for simplistic retry.
+                # But wait, python default recursion limit.
+                # Let's trust one retry loop.
+                r = requests.post(url, data={"chat_id": channel, "text": text}, timeout=10)
+            
+            r.raise_for_status()
+            return True
     except Exception as e:
         logger.error(f"Gagal kirim pesan TG: {e}")
         return False
@@ -68,11 +80,8 @@ def tg_media_group(media_files: list, caption: str = "") -> int:
         file_key = f"photo{i}"
         files[file_key] = open(file_path, "rb")
         media_item = {"type": "photo", "media": f"attach://{file_key}"}
-        # Caption only on first item if provided AND we are NOT sending separate reply
-        # But user wants reply caption. So we can put simple caption here or None.
-        # User request: "dikirim setelah foto lalu audio nya ngereply foto dan captionnya buat blockquote"
-        # So maybe NO caption on album? Or simple caption?
-        # Let's put simple caption on album, proper caption on audio reply.
+        
+        # Caption on first item
         if i == 0 and caption:
              media_item["caption"] = caption
              media_item["parse_mode"] = "HTML"
@@ -81,18 +90,19 @@ def tg_media_group(media_files: list, caption: str = "") -> int:
     if not media: return -1
 
     try:
+        # Upload is NOT locked, so we can upload in parallel
+        # But requests session is independent.
         r = requests.post(url, data={"chat_id": channel, "media": json.dumps(media)}, files=files, timeout=(60, 300))
         if r.status_code == 429:
             retry = int(r.headers.get("Retry-After", "10"))
             logger.warning(f"Rate limited. Menunggu {retry}s...")
             time.sleep(retry)
-            return tg_media_group(media_files, caption) 
+            return tg_media_group(media_files, caption) # Retry recursive
         r.raise_for_status()
         
         # Get message_id
         res = r.json()
         if res.get("ok"):
-            # Result is array of messages
             msgs = res.get("result", [])
             if msgs:
                 return msgs[0]["message_id"]
@@ -116,8 +126,10 @@ def tg_send_audio_reply(audio_path: str, caption: str, reply_to_id: int) -> bool
                 "chat_id": channel,
                 "caption": caption,
                 "parse_mode": "HTML",
-                "reply_to_message_id": reply_to_id
             }
+            if reply_to_id and reply_to_id > 0:
+                data["reply_to_message_id"] = reply_to_id
+                
             r = requests.post(url, data=data, files={"audio": f}, timeout=60)
             
             if r.status_code == 429:
@@ -155,15 +167,7 @@ def format_caption(meta: dict, username: str, pid: str) -> str:
     date = meta.get('date') or ""
     url = f"https://www.tiktok.com/@{username}/video/{pid}"
     
-    # Escape HTML
     esc = lambda s: html.escape(str(s), quote=True)
-    
-    # Blockquote format requested:
-    # blockquote = // 
-    # // Judul Video
-    # // Nama akun
-    # // kapan waktu di posting
-    # // url 
     
     return (
         f"<blockquote><b>{esc(desc[:800])}</b></blockquote>\n"
@@ -173,7 +177,9 @@ def format_caption(meta: dict, username: str, pid: str) -> str:
     )
 
 def process_gallery(url: str, limit: int = 0) -> int:
-    if STOP: return 0
+    if STOP or not url: return 0
+    
+    # Thread-local logger context? Using thread name in log format.
     
     if '@' in url:
         username = url.split('@')[-1].split('/')[0]
@@ -189,12 +195,13 @@ def process_gallery(url: str, limit: int = 0) -> int:
 
     existing_files = set(os.listdir(user_photo_dir))
 
-    # Run Gallery-DL (Include audio mp3/m4a)
+    # Run Gallery-DL
+    # Note: gallery-dl is mostly single threaded, so parallel processes are fine
     cmd = [
         sys.executable, "-m", "gallery_dl", url,
         "--cookies", TT_COOKIES,
         "--download-archive", photo_archive,
-        "--filter", "extension in ('jpg', 'jpeg', 'png', 'webp', 'mp3', 'm4a')", # Add audio extensions
+        "--filter", "extension in ('jpg', 'jpeg', 'png', 'webp', 'mp3', 'm4a')",
         "--no-skip",
         "--write-metadata",
         "-D", user_photo_dir,
@@ -202,6 +209,8 @@ def process_gallery(url: str, limit: int = 0) -> int:
     ]
     
     try:
+        # Capture stderr to avoid thread mixing clutter? Or allow it?
+        # subprocess.PIPE is safer.
         subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     except FileNotFoundError:
         logger.error("Gallery-DL tidak ditemukan/terinstall.")
@@ -212,21 +221,20 @@ def process_gallery(url: str, limit: int = 0) -> int:
     current_files = set(os.listdir(user_photo_dir))
     new_files = sorted(current_files - existing_files)
     
-    # Filter content
-    # Photos for album
+    # Filter
     new_photos = [f for f in new_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-    # Audios for reply
     new_audios = [f for f in new_files if f.lower().endswith(('.mp3', '.m4a'))]
     
     if not new_photos and not new_audios:
-        logger.info(f"Tidak ada konten baru untuk @{username}")
+        # logger.info(f"Tidak ada konten baru untuk @{username}") 
+        # Reduce log noise in parallel
         return 0
 
-    logger.info(f"Ditemukan {len(new_photos)} foto dan {len(new_audios)} audio baru.")
+    logger.info(f"@{username}: +{len(new_photos)} foto, +{len(new_audios)} audio.")
 
-    # Grouping by PID
+    # Grouping
     grouped_photos = {}
-    grouped_audios = {} # PID -> audio_path (usually 1 per post)
+    grouped_audios = {} 
 
     for f in new_photos:
         pid = f.split('_')[0]
@@ -235,29 +243,25 @@ def process_gallery(url: str, limit: int = 0) -> int:
         
     for f in new_audios:
         pid = f.split('_')[0]
-        # Only take the first audio per PID if multiple (rare)
         if pid not in grouped_audios:
              grouped_audios[pid] = os.path.join(user_photo_dir, f)
 
-    # Process each PID from photos
     all_pids = set(grouped_photos.keys()) | set(grouped_audios.keys())
     
     photos_sent_count = 0
     
+    # Sending logic
     for pid in sorted(all_pids):
         if STOP: break
         
         paths = grouped_photos.get(pid, [])
         audio_path = grouped_audios.get(pid)
         
-        # Sort photos
         paths.sort(key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
         
-        # Metadata
-        caption = f"📸 @{username} - {pid}" # Fallback
+        caption = f"📸 @{username} - {pid}"
         json_path = ""
         
-        # Try find json
         potential_files = [x for x in current_files if x.startswith(f"{pid}_") and x.endswith(".json")]
         if potential_files:
             json_path = os.path.join(user_photo_dir, potential_files[0])
@@ -267,67 +271,53 @@ def process_gallery(url: str, limit: int = 0) -> int:
                     caption = format_caption(meta, username, pid)
             except: pass
 
-        # Send Album First
         album_msg_id = -1
         
-        # If no photos (audio only?), unlikely for gallery-dl tiktok, but possible
+        # Send Photo Album
         if paths:
-             # Chunking 10
              for i in range(0, len(paths), 10):
                 chunk = paths[i:i+10]
-                # If audio exists, we put caption ONLY on audio reply? 
-                # Or caption on album AND audio?
-                # User said: "audio nya ngereply foto dan captionnya buat blockquote"
-                # So Album might not need full caption, or maybe just "Photos".
-                # Let's put short caption on Album, Full Blockquote on Audio.
-                # If NO audio, put Full Blockquote on Album.
-                
                 album_cap = ""
                 if i == 0:
                     if audio_path:
                         album_cap = f"📸 Photos from @{username}"
                     else:
-                        album_cap = caption # No audio, so caption here
+                        album_cap = caption 
                 
                 mid = tg_media_group(chunk, album_cap)
                 if i == 0 and mid > 0:
                     album_msg_id = mid
                 
                 if mid > 0:
-                    logger.info(f"Sent album {pid} part {i//10+1}")
                     # Cleanup photos
                     for p in chunk:
                         try: os.remove(p)
                         except: pass
                 else: 
-                     logger.error(f"Failed to send album {pid}")
+                     logger.error(f"Failed to send album {pid} (@{username})")
                 
-                time.sleep(2)
+                time.sleep(2) # Small delay inside thread
         
         # Send Audio Reply
         if audio_path and album_msg_id > 0:
              time.sleep(1)
              if tg_send_audio_reply(audio_path, caption, album_msg_id):
-                 logger.info(f"Sent audio reply for {pid}")
+                 pass # Success logging if needed
              else:
                  logger.error(f"Failed to send audio reply {pid}")
-             
-             # Cleanup audio
              try: os.remove(audio_path)
              except: pass
         elif audio_path:
-             # Case: Audio exists but album failed or no photos. Send as normal audio.
              tg_send_audio_reply(audio_path, caption, None)
              try: os.remove(audio_path)
              except: pass
 
-        # Cleanup JSON
         if json_path and os.path.exists(json_path):
             try: os.remove(json_path)
             except: pass
             
         photos_sent_count += len(paths)
-        time.sleep(5)
+        time.sleep(5) # Delay per post
 
     return photos_sent_count
 
@@ -339,17 +329,29 @@ def main():
 
     accounts = load_accounts()
     start_time = datetime.now()
+    total_acc = len(accounts)
     
-    tg_message(f"📸 GALLERY WORKER START\n⏰ {start_time:%H:%M:%S}\n📋 {len(accounts)} Akun")
-    logger.info(f"Start Gallery Worker. {len(accounts)} accounts.")
+    tg_message(f"📸 GALLERY WORKER START (Parallel)\n⏰ {start_time:%H:%M:%S}\n📋 {total_acc} Akun")
+    logger.info(f"Start Gallery Worker. {total_acc} accounts. Parallel=5")
     
     total_new = 0
 
-    for i, acc in enumerate(accounts, 1):
-        if STOP: break
-        count = process_gallery(acc)
-        total_new += count
-        if SLEEP_SECONDS > 0: time.sleep(SLEEP_SECONDS)
+    # Parallel Execution (5 workers)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(process_gallery, url, args.limit): url for url in accounts}
+        
+        for i, future in enumerate(as_completed(futures), 1):
+            if STOP:
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+            try:
+                count = future.result()
+                total_new += count
+            except Exception as e:
+                logger.error(f"Error thread: {e}")
+            
+            if i % 10 == 0:
+                logger.info(f"Progress: {i}/{total_acc} akun selesai.")
 
     end_time = datetime.now()
     tg_message(
