@@ -9,7 +9,7 @@ on:
       limit:
         description: "Maksimum jumlah video per run"
         required: false
-        default: "150"
+        default: "10"
 
 jobs:
   download:
