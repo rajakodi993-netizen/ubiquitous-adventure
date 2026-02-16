@@ -40,7 +40,6 @@ jobs:
 
       - name: Decode scripts & secrets
         run: |
-          echo "${{ secrets.ACPN_PY }}" | base64 -d > ACPN.py
           mkdir -p data
           echo "${{ secrets.UPLOAD_EXEC_PY }}" | base64 -d > data/upload_exec.py
           echo "${{ secrets.UPLOAD_FALLBACK_PY }}" | base64 -d > data/upload_fallback.py

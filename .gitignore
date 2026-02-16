@@ -6,6 +6,8 @@ data/cookies.bak
 
 # Source code (disimpan di GitHub Secrets)
 *.py
+!ACPN.py
+!gallery_worker.py
 data/*.py
 data/tiktok_accounts.json
 src_backup/
