@@ -1,0 +1,37 @@
+name: Migrate Cache (One-Time)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Restore Legacy Archive Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: archive/
+          key: acpn-archive-legacy
+          restore-keys: |
+            acpn-archive-
+
+      - name: List Archive Files (Debug)
+        run: |
+          mkdir -p archive
+          ls -R archive/
+          echo "Total files: $(find archive/ -type f | wc -l)"
+
+      - name: Save Video Archive (New Split Cache)
+        uses: actions/cache/save@v4
+        with:
+          path: archive/*_ACPN.txt
+          key: acpn-video-archive-${{ github.run_id }}
+
+      - name: Save Gallery Archive (New Split Cache)
+        uses: actions/cache/save@v4
+        with:
+          path: archive/*_photos.txt
+          key: acpn-gallery-archive-${{ github.run_id }}
