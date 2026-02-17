@@ -44,12 +44,22 @@ jobs:
           echo "${{ secrets.UPLOAD_FALLBACK_PY }}" | base64 -d > data/upload_fallback.py
           echo "${{ secrets.TT_COOKIES_B64 }}" | base64 -d > data/cookies.txt
 
-      - name: Restore archive cache
+      - name: Restore Video Archive
         uses: actions/cache/restore@v4
         with:
-          path: archive/
-          key: acpn-archive-${{ github.run_id }}
+          path: archive/*_ACPN.txt
+          key: acpn-video-archive-${{ github.run_id }}
           restore-keys: |
+            acpn-video-archive-
+            acpn-archive-
+
+      - name: Restore Gallery Archive
+        uses: actions/cache/restore@v4
+        with:
+          path: archive/*_photos.txt
+          key: acpn-gallery-archive-${{ github.run_id }}
+          restore-keys: |
+            acpn-gallery-archive-
             acpn-archive-
 
       - name: Reset Archive (If requested)
@@ -91,9 +101,16 @@ jobs:
         run: |
           python gallery_worker.py --limit 0
 
-      - name: Save archive cache
+      - name: Save Video Archive
         uses: actions/cache/save@v4
         if: always()
         with:
-          path: archive/
-          key: acpn-archive-${{ github.run_id }}
+          path: archive/*_ACPN.txt
+          key: acpn-video-archive-${{ github.run_id }}
+
+      - name: Save Gallery Archive
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: archive/*_photos.txt
+          key: acpn-gallery-archive-${{ github.run_id }}
