@@ -2,7 +2,7 @@ name: ACPN Downloader
 
 on:
   schedule:
-    # Setiap 1 jam
+    # Setiap 1 jam (Gallery otomatis skip)
     - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
@@ -10,6 +10,10 @@ on:
         description: "Maksimum jumlah video per run"
         required: false
         default: "10"
+      run_gallery:
+        description: "Jalankan proses Gallery (Photo)?"
+        type: boolean
+        default: false
 
 jobs:
   download:
@@ -18,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: [actions/checkout@v4](https://github.com)
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: [actions/setup-python@v5](https://github.com)
         with:
           python-version: "3.11"
           cache: "pip"
@@ -54,7 +58,7 @@ jobs:
           echo "${{ secrets.TT_COOKIES_B64 }}" | base64 -d > data/cookies.txt
 
       - name: Restore Video Archive
-        uses: actions/cache/restore@v4
+        uses: [actions/cache/restore@v4](https://github.com)
         with:
           path: archive/*_ACPN.txt
           key: acpn-video-archive-${{ github.run_id }}
@@ -63,7 +67,9 @@ jobs:
             acpn-archive-
 
       - name: Restore Gallery Archive
-        uses: actions/cache/restore@v4
+        # Hanya restore cache gallery jika memang akan dijalankan
+        if: github.event.inputs.run_gallery == 'true'
+        uses: [actions/cache/restore@v4](https://github.com)
         with:
           path: archive/*_photos.txt
           key: acpn-gallery-archive-${{ github.run_id }}
@@ -87,26 +93,27 @@ jobs:
           python ACPN.py --limit "$LIMIT"
 
       - name: Run Gallery Worker (Photo)
-        if: always()
+        # HANYA jalan jika dipicu MANUAL dan centang 'run_gallery'
+        if: github.event.inputs.run_gallery == 'true'
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           NOTIF_CHANNEL_ID: ${{ secrets.NOTIF_CHANNEL_ID }}
           UPLOAD_CHANNEL_ID: ${{ secrets.UPLOAD_CHANNEL_ID }}
           SLEEP_SECONDS: "5"
         run: |
-          # Limit gallery worker? Default 0 (process all new)
           python gallery_worker.py
 
       - name: Save Video Archive
-        uses: actions/cache/save@v4
+        uses: [actions/cache/save@v4](https://github.com)
         if: always()
         with:
           path: archive/*_ACPN.txt
           key: acpn-video-archive-${{ github.run_id }}
 
       - name: Save Gallery Archive
-        uses: actions/cache/save@v4
-        if: always()
+        # Simpan archive hanya jika gallery tadi dijalankan
+        if: github.event.inputs.run_gallery == 'true'
+        uses: [actions/cache/save@v4](https://github.com)
         with:
           path: archive/*_photos.txt
           key: acpn-gallery-archive-${{ github.run_id }}
