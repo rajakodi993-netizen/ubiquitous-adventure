@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: [actions/checkout@v4](https://github.com)
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: [actions/setup-python@v5](https://github.com)
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -69,7 +69,7 @@ jobs:
       - name: Restore Gallery Archive
         # Hanya restore cache gallery jika memang akan dijalankan
         if: github.event.inputs.run_gallery == 'true'
-        uses: [actions/cache/restore@v4](https://github.com)
+        uses: actions/cache/restore@v4
         with:
           path: archive/*_photos.txt
           key: acpn-gallery-archive-${{ github.run_id }}
@@ -104,7 +104,7 @@ jobs:
           python gallery_worker.py
 
       - name: Save Video Archive
-        uses: [actions/cache/save@v4](https://github.com)
+        uses: actions/cache/save@v4
         if: always()
         with:
           path: archive/*_ACPN.txt
@@ -113,7 +113,7 @@ jobs:
       - name: Save Gallery Archive
         # Simpan archive hanya jika gallery tadi dijalankan
         if: github.event.inputs.run_gallery == 'true'
-        uses: [actions/cache/save@v4](https://github.com)
+        uses: actions/cache/save@v4
         with:
           path: archive/*_photos.txt
           key: acpn-gallery-archive-${{ github.run_id }}
