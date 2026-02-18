@@ -58,7 +58,7 @@ jobs:
           echo "${{ secrets.TT_COOKIES_B64 }}" | base64 -d > data/cookies.txt
 
       - name: Restore Video Archive
-        uses: [actions/cache/restore@v4](https://github.com)
+        uses: actions/cache/restore@v4
         with:
           path: archive/*_ACPN.txt
           key: acpn-video-archive-${{ github.run_id }}
