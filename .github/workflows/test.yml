@@ -1,0 +1,60 @@
+name: Debug Hugging Face Upload
+
+on:
+  workflow_dispatch: # Ini agar Anda bisa memicu (trigger) script ini secara manual pakai tombol
+
+jobs:
+  test-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Hugging Face Hub
+        run: pip install huggingface_hub
+
+      - name: Jalankan Script Test Upload
+        # Ini penting: memanggil secret yang baru Anda buat ke dalam environment variables
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "
+          import os
+          from datetime import datetime, timezone, timedelta
+          from huggingface_hub import upload_file
+
+          hf_token = os.getenv('HF_TOKEN')
+          if not hf_token:
+              print('❌ ERROR: HF_TOKEN kosong! Pastikan Secret sudah diisi.')
+              exit(1)
+
+          repo_id = 'tafofyfe/ACPN'
+          dummy_file = 'video_test.mp4'
+
+          # Bikin file kosong pura-pura jadi video
+          with open(dummy_file, 'w') as f:
+              f.write('Ini file dummy dari GitHub Actions')
+
+          waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+          date_folder = waktu_wib.strftime('%Y/%m/%d')
+          path_in_repo = f'{date_folder}/{dummy_file}'
+
+          print(f'🔄 Mencoba upload ke Hugging Face: {repo_id}/{path_in_repo}...')
+          try:
+              upload_file(
+                  path_or_fileobj=dummy_file,
+                  path_in_repo=path_in_repo,
+                  repo_id=repo_id,
+                  repo_type='dataset',
+                  token=hf_token
+              )
+              print('✅ SUKSES! File berhasil diunggah.')
+          except Exception as e:
+              print(f'❌ GAGAL: {e}')
+              exit(1)
+          "
