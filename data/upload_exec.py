@@ -1,7 +1,8 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import os, sys, json, requests, html, tempfile, subprocess, shutil, time, mimetypes
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+from huggingface_hub import upload_file
 
 # === Load .env ===
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -10,7 +11,41 @@ load_dotenv(os.path.join(_BASE_DIR, '.env'))
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 UPLOAD_CHANNEL_ID = os.getenv("UPLOAD_CHANNEL_ID")
 
-# -------------------- Fungsi baru untuk menangani request dengan retry otomatis --------------------
+# -------------------- Fungsi Upload ke Hugging Face --------------------
+def upload_to_huggingface(file_path: str) -> bool:
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        print("⚠️ HF_TOKEN tidak ditemukan. Lewati upload ke Hugging Face.")
+        return False
+        
+    repo_id = "tafofyfe/ACPN"
+    filename = os.path.basename(file_path)
+    
+    # Ambil waktu UTC saat ini, lalu tambah 7 jam untuk konversi ke WIB
+    waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+    
+    # Format menjadi string "YYYY/MM/DD" (Contoh: "2026/03/08")
+    date_folder = waktu_wib.strftime("%Y/%m/%d")
+    
+    # Gabungkan nama folder dengan nama file
+    path_in_repo = f"{date_folder}/{filename}" 
+    
+    try:
+        print(f"☁️ Mengunggah ke Hugging Face: {repo_id}/{path_in_repo} ...")
+        upload_file(
+            path_or_fileobj=file_path,
+            path_in_repo=path_in_repo,
+            repo_id=repo_id,
+            repo_type="dataset",
+            token=hf_token
+        )
+        print("✅ Berhasil upload ke Hugging Face!")
+        return True
+    except Exception as e:
+        print(f"❌ Gagal upload ke Hugging Face: {e}")
+        return False
+
+# -------------------- Fungsi Penanganan Request Telegram --------------------
 def send_telegram_request_with_retry(url, data=None, files=None, timeout=(30, 300), max_retries=5):
     """
     Mengirim request ke API Telegram dengan mekanisme retry otomatis untuk error 429 (Too Many Requests).
@@ -54,7 +89,7 @@ def send_telegram_request_with_retry(url, data=None, files=None, timeout=(30, 30
     raise Exception(f"Gagal mengirim request setelah {max_retries} kali percobaan.")
 
 
-# -------------------- Helpers dasar (TIDAK ADA PERUBAHAN) --------------------
+# -------------------- Helpers dasar --------------------
 def find_info_json(video_path: str) -> str:
     base, _ = os.path.splitext(video_path)
     cand = base + ".info.json"
@@ -110,7 +145,7 @@ def caption_from_meta(meta: dict, video_path: str) -> str:
         f"<blockquote>🔗 <a href=\"{url_e}\">Watch</a></blockquote>"
     )
 
-# -------------------- Thumbnail utils (TIDAK ADA PERUBAHAN) --------------------
+# -------------------- Thumbnail utils --------------------
 def _ffprobe_duration(path: str) -> float | None:
     try:
         out = subprocess.check_output([
@@ -317,7 +352,7 @@ def send_caption_reply(caption_html: str, reply_to_message_id: int):
     send_telegram_request_with_retry(url=api, data=data, timeout=(30, 120))
     print(f"🧾 Caption dikirim sebagai reply ke message_id={reply_to_message_id}")
 
-# -------------------- Main (HAPUS time.sleep dari finally) --------------------
+# -------------------- Main --------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: upload_exec.py <filepath>")
@@ -349,11 +384,17 @@ if __name__ == "__main__":
         print(thumb_info)
 
         first_msg_id = send_media_group_return_first_id(file_path, cover_path, thumb_path, caption_html=caption)
+        
+        # JIKA UPLOAD TELEGRAM BERHASIL, BARU UPLOAD KE HUGGING FACE
         if first_msg_id and first_msg_id > 0:
             upload_ok = True
-            # send_caption_reply(caption, first_msg_id) # DISABLED: Caption now merged
+            
+            print("\n" + "="*40)
+            upload_to_huggingface(file_path)
+            print("="*40 + "\n")
+            
         else:
-            print("⚠️ Upload gagal atau tidak dapat message_id.")
+            print("⚠️ Upload Telegram gagal atau tidak dapat message_id.")
 
     except Exception as e:
         print(f"❌ Gagal upload: {e}")
@@ -382,4 +423,3 @@ if __name__ == "__main__":
         print(f"📌 Video TIDAK dihapus karena upload gagal: {file_path}")
         print(f"   Bisa di-retry nanti dengan upload_fallback.py")
         sys.exit(2)
-
