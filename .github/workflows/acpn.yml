@@ -90,6 +90,7 @@ jobs:
           UPLOAD_CHANNEL_ID: ${{ secrets.UPLOAD_CHANNEL_ID }}
           DUMP_CHANNEL_ID: ${{ secrets.DUMP_CHANNEL_ID }}
           DUMP_BOT: ${{ secrets.DUMP_BOT }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SLEEP_SECONDS: "5"
         run: |
           LIMIT="${{ github.event.inputs.limit || '150' }}"
