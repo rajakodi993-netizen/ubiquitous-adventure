@@ -11,6 +11,8 @@ import pathlib
 import argparse
 import subprocess
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
 from huggingface_hub import HfApi
@@ -42,15 +44,21 @@ logger.handlers = [fh, sh]
 
 # === TELEGRAM ===
 import requests
+tg_lock = threading.Lock() # Lock untuk mencegah bentrok kirim pesan paralel
 
 def tg_message(text: str) -> bool:
     if not (BOT_TOKEN and NOTIF_CHANNEL_ID):
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "text": text})
-        r.raise_for_status()
-        return True
+        with tg_lock:
+            for _ in range(3):
+                r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "text": text}, timeout=10)
+                if r.status_code == 429:
+                    time.sleep(int(r.headers.get("Retry-After", 5)))
+                    continue
+                r.raise_for_status()
+                return True
     except Exception as e:
         logger.error(f"Gagal kirim pesan TG: {e}")
         return False
@@ -62,10 +70,11 @@ def tg_document(file_path: str, caption: str = "") -> bool:
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     try:
-        with open(file_path, 'rb') as f:
-            r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "caption": caption}, files={"document": f})
-        r.raise_for_status()
-        return True
+        with tg_lock:
+            with open(file_path, 'rb') as f:
+                r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "caption": caption}, files={"document": f}, timeout=60)
+            r.raise_for_status()
+            return True
     except Exception as e:
         logger.error(f"Gagal kirim dokumen TG: {e}")
         return False
@@ -123,7 +132,59 @@ def load_accounts() -> list:
         logger.error(f"Gagal memuat akun: {e}")
     return []
 
-def run_cycle(limit=30):
+# === FUNGSI PROSES PARALEL ===
+def process_account(url: str, limit: int, upload_exec_path: str) -> int:
+    if STOP or not url or 'tiktok.com' not in url:
+        return 0
+    
+    try:
+        username = url.split('@')[1].split('/')[0]
+    except:
+        username = "unknown"
+
+    logger.info(f"🔍 Mengecek: @{username} ...")
+    user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
+    
+    cmd = [
+        "yt-dlp",
+        url,
+        "--impersonate", "chrome",
+        "--cookies", TT_COOKIES,
+        "--download-archive", user_archive,
+        "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
+        "--write-info-json", 
+        "--no-part",
+        "--no-warnings",
+        "--ignore-errors",
+        "--restrict-filenames",
+        "--exec", f"{sys.executable} {upload_exec_path} {{}}",
+    ]
+
+    # Limit per account check
+    if limit > 0:
+        cmd.extend(["--playlist-end", str(limit)])
+
+    before_count = 0
+    if os.path.exists(user_archive):
+        with open(user_archive, 'r') as f:
+            before_count = sum(1 for line in f)
+
+    # Jalankan yt-dlp
+    subprocess.run(cmd, capture_output=True, text=True)
+
+    after_count = 0
+    if os.path.exists(user_archive):
+        with open(user_archive, 'r') as f:
+            after_count = sum(1 for line in f)
+    
+    new_videos = max(0, after_count - before_count)
+    if new_videos > 0:
+        tg_message(f"✅ @{username}: +{new_videos} video")
+        logger.info(f"✅ @{username}: Berhasil mendapat {new_videos} video baru.")
+        
+    return new_videos
+
+def run_cycle(limit=10):
     global STOP
     if not _acquire_lock():
         return
@@ -132,75 +193,35 @@ def run_cycle(limit=30):
         accounts = load_accounts()
         total = len(accounts)
         if total == 0:
-            logger.warning("Tidak ada akun untuk diproses.")
+            logger.warning("Tidak ada akun.")
             return
 
         os.makedirs(VIDEO_DIR, exist_ok=True)
         os.makedirs(ARCHIVE_DIR, exist_ok=True)
-
         upload_exec_path = os.path.join(BASE_DIR, 'data', 'upload_exec.py')
 
         start = datetime.now()
-        total_downloaded = 0
-        tg_message(f"🚀 SIKLUS DIMULAI\n⏰ {start:%Y-%m-%d %H:%M:%S}\n📋 Total akun: {total}\n📦 Limit: {limit if limit > 0 else 'tanpa batas'}")
+        tg_message(f"🚀 SIKLUS DIMULAI (Parallel)\n⏰ {start:%Y-%m-%d %H:%M:%S}\n📋 {total} Akun\n⚡ Limit: {limit} (per akun)")
 
-        for i, url in enumerate(accounts, 1):
-            if STOP:
-                break
+        total_new = 0
+        
+        # Eksekusi Paralel (max_workers=3 cocok untuk Github Actions)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(process_account, url, limit, upload_exec_path): url for url in accounts}
             
-            if not url or 'tiktok.com' not in url:
-                continue
-            
-            try:
-                username = url.split('@')[1].split('/')[0]
-            except:
-                username = "unknown"
-
-            logger.info(f"[{i}/{total}] Memproses: {url} (@{username})")
-            
-            user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
-            
-            cmd = [
-                "yt-dlp",
-                url,
-                "--impersonate", "chrome",
-                "--cookies", TT_COOKIES,
-                "--download-archive", user_archive,
-                "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
-                "--write-info-json", 
-                "--no-part", 
-                "--no-warnings",
-                "--ignore-errors",
-                "--restrict-filenames",
-                "--exec", f"{sys.executable} {upload_exec_path} {{}}", 
-            ]
-
-            if limit > 0:
-                remaining = limit - total_downloaded
-                if remaining <= 0:
-                    logger.info("Limit total tercapai. Berhenti.")
+            for i, future in enumerate(as_completed(futures), 1):
+                if STOP: 
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
-                cmd.extend(["--playlist-end", str(remaining)])
-
-            before_count = 0
-            if os.path.exists(user_archive):
-                with open(user_archive, 'r') as f:
-                    before_count = sum(1 for line in f)
-
-            subprocess.run(cmd)
-
-            after_count = 0
-            if os.path.exists(user_archive):
-                with open(user_archive, 'r') as f:
-                    after_count = sum(1 for line in f)
-            
-            new_videos = max(0, after_count - before_count)
-            total_downloaded += new_videos
-
-            tg_message(f"✅ [{i}/{total}] Selesai: @{username} (+{new_videos} video)")
-
-            if SLEEP_SECONDS > 0 and not STOP:
-                time.sleep(SLEEP_SECONDS)
+                try:
+                    new_count = future.result()
+                    total_new += new_count
+                except Exception as e:
+                    logger.error(f"Error thread: {e}")
+                
+                # Progress log setiap kelipatan 10
+                if i % 10 == 0 or i == total:
+                    logger.info(f"Progress: {i}/{total} akun selesai diperiksa.")
 
         # -------------------- HUGGING FACE BATCH UPLOAD (LARGE FOLDER) --------------------
         hf_token = os.getenv("HF_TOKEN")
@@ -211,20 +232,16 @@ def run_cycle(limit=30):
                 staging_dir = os.path.join(BASE_DIR, 'hf_staging')
                 try:
                     logger.info(f"☁️ Memulai upload_large_folder {len(mp4_files)} video ke Hugging Face...")
-                    # Ambil waktu WIB dan buat format folder YYYY/MM/DD
                     waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
                     date_folder = waktu_wib.strftime("%Y/%m/%d")
                     
-                    # 1. Buat folder staging lokal
                     target_dir = os.path.join(staging_dir, date_folder)
                     os.makedirs(target_dir, exist_ok=True)
                     
-                    # 2. Pindahkan file .mp4 dan .info.json ke folder staging
                     for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
                         if f.endswith('.mp4') or f.endswith('.info.json'):
                             shutil.move(f, os.path.join(target_dir, os.path.basename(f)))
                     
-                    # 3. Eksekusi upload_large_folder menggunakan HfApi
                     api = HfApi(token=hf_token)
                     api.upload_large_folder(
                         folder_path=staging_dir,
@@ -239,23 +256,16 @@ def run_cycle(limit=30):
                     logger.error(f"❌ Gagal upload_large_folder HF: {e}")
                     tg_message(f"❌ HF Upload Error: {e}")
                 finally:
-                    # 4. Bersihkan folder staging agar tidak menumpuk di server runner
                     if os.path.exists(staging_dir):
                         shutil.rmtree(staging_dir, ignore_errors=True)
             else:
                 logger.warning("⚠️ HF_TOKEN tidak ada. Skip upload HF.")
 
-            # CLEANUP FOLDER VIDEO (jaga-jaga jika ada file lain yang tersisa)
+            # CLEANUP FOLDER VIDEO
             for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
                 try: os.remove(f)
                 except: pass
             logger.info("🧹 Folder VIDEO_DIR dibersihkan.")
-
-        # kirim log
-        try:
-            tg_document(LOG_FILE, "📝 Log Siklus Pengunduhan")
-        except Exception:
-            pass
 
         # zip arsip
         zip_path = os.path.join(BASE_DIR, 'arsip_ACPN.zip')
@@ -268,7 +278,7 @@ def run_cycle(limit=30):
         tg_message(
             f"🏁 SIKLUS SELESAI\n"
             f"⏱️ Durasi: {end - start}\n"
-            f"📦 Total video baru: {total_downloaded}\n"
+            f"📦 Total baru: {total_new}\n"
             f"⏰ {end:%Y-%m-%d %H:%M:%S}"
         )
 
@@ -280,8 +290,8 @@ def run_cycle(limit=30):
 
 def main():
     parser = argparse.ArgumentParser(description="ACPN - TikTok Downloader")
-    parser.add_argument('--limit', type=int, default=30,
-                        help='Maksimum jumlah video baru per siklus (default: 30, 0=tanpa batas)')
+    parser.add_argument('--limit', type=int, default=10,
+                        help='Maksimum jumlah video per akun (default: 10, 0=tanpa batas)')
     parser.add_argument('--loop', action='store_true',
                         help='Mode loop (untuk VPS). Tanpa flag ini = single-run (untuk GitHub Actions)')
     args = parser.parse_args()
