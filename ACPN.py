@@ -1,300 +1,333 @@
 #!/usr/bin/env python3
-import os
-import sys
-import json
-import glob
-import time
-import zipfile
-import logging
-import signal
-import pathlib
-import argparse
-import subprocess
-import shutil
-from datetime import datetime, timezone, timedelta
-from logging.handlers import RotatingFileHandler
-from huggingface_hub import upload_large_folder
+import os, sys, json, requests, html, tempfile, subprocess, shutil, time, mimetypes
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
-# === BASE DIR ===
-BASE_DIR = os.environ.get('GITHUB_WORKSPACE', os.path.dirname(os.path.abspath(__file__)))
+# === Load .env ===
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_BASE_DIR = os.environ.get('GITHUB_WORKSPACE', os.path.dirname(_SCRIPT_DIR))
+load_dotenv(os.path.join(_BASE_DIR, '.env'))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+UPLOAD_CHANNEL_ID = os.getenv("UPLOAD_CHANNEL_ID")
 
-# === ENV ===
-VIDEO_DIR = os.getenv('VIDEO_DIR', os.path.join(BASE_DIR, 'videos'))
-ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', os.path.join(BASE_DIR, 'archive'))
-LOG_FILE = os.getenv('LOG_FILE', os.path.join(BASE_DIR, 'logs', 'download.log'))
-NOTIF_CHANNEL_ID = os.getenv('NOTIF_CHANNEL_ID', '')
-BOT_TOKEN = os.getenv('BOT_TOKEN', '')
-TT_COOKIES = os.getenv('TT_COOKIES', os.path.join(BASE_DIR, 'data', 'cookies.txt'))
-LOCK_FILE = os.getenv('LOCK_FILE', os.path.join(BASE_DIR, 'data', 'lock', 'tiktok_downloader.lock'))
-ACCOUNTS_FILE = os.getenv('ACCOUNTS_FILE', os.path.join(BASE_DIR, 'data', 'tiktok_accounts.json'))
-SLEEP_SECONDS = int(os.getenv('SLEEP_SECONDS', '5'))
-
-# === LOGGING (rotating) ===
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-logger = logging.getLogger('acpn')
-logger.setLevel(logging.INFO)
-fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%Y-%m-%d %H:%M:%S')
-fh = RotatingFileHandler(LOG_FILE, maxBytes=10_000_000, backupCount=5)
-fh.setFormatter(fmt)
-sh = logging.StreamHandler(sys.stdout)
-sh.setFormatter(fmt)
-logger.handlers = [fh, sh]
-
-# === TELEGRAM ===
-import requests
-
-def tg_message(text: str) -> bool:
-    if not (BOT_TOKEN and NOTIF_CHANNEL_ID):
-        return False
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "text": text})
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"Gagal kirim pesan TG: {e}")
-        return False
-
-def tg_document(file_path: str, caption: str = "") -> bool:
-    if not (BOT_TOKEN and NOTIF_CHANNEL_ID):
-        return False
-    if not os.path.exists(file_path):
-        return False
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    try:
-        with open(file_path, 'rb') as f:
-            r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "caption": caption}, files={"document": f})
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"Gagal kirim dokumen TG: {e}")
-        return False
-
-# === LOCK ===
-def _acquire_lock():
-    if os.path.exists(LOCK_FILE):
+# -------------------- Fungsi Penanganan Request Telegram --------------------
+def send_telegram_request_with_retry(url, data=None, files=None, timeout=(30, 300), max_retries=5):
+    retries = 0
+    while retries < max_retries:
         try:
-            with open(LOCK_FILE, 'r') as f:
-                pid = f.read().strip()
-            if os.path.exists(f"/proc/{pid}"):
-                logger.warning(f"Proses lain sedang berjalan (PID {pid}). Keluar.")
-                return False
-        except:
-            pass
-    try:
-        os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
-        with open(LOCK_FILE, 'w') as f:
-            f.write(str(os.getpid()))
-        return True
-    except Exception as e:
-        logger.error(f"Gagal membuat lock file: {e}")
-        return False
-
-def _release_lock():
-    try:
-        if os.path.exists(LOCK_FILE):
-            os.remove(LOCK_FILE)
-            logger.info("Lock dihapus.")
-    except Exception as e:
-        logger.error(f"Gagal menghapus lock: {e}")
-
-# === UTIL ===
-STOP = False
-def _sig_handler(signum, frame):
-    global STOP
-    STOP = True
-    logger.warning("Signal diterima. Berhenti...")
-signal.signal(signal.SIGINT, _sig_handler)
-signal.signal(signal.SIGTERM, _sig_handler)
-
-def load_accounts() -> list:
-    try:
-        if os.path.exists(ACCOUNTS_FILE):
-            with open(ACCOUNTS_FILE, 'r') as f:
-                data = json.load(f)
-            clean_list = []
-            for item in data:
-                if isinstance(item, str):
-                    clean_list.append(item)
-                elif isinstance(item, dict) and 'url' in item:
-                    clean_list.append(item['url'])
-            return clean_list
-    except Exception as e:
-        logger.error(f"Gagal memuat akun: {e}")
-    return []
-
-def run_cycle(limit=30):
-    global STOP
-    if not _acquire_lock():
-        return
-
-    try:
-        accounts = load_accounts()
-        total = len(accounts)
-        if total == 0:
-            logger.warning("Tidak ada akun untuk diproses.")
-            return
-
-        os.makedirs(VIDEO_DIR, exist_ok=True)
-        os.makedirs(ARCHIVE_DIR, exist_ok=True)
-
-        upload_exec_path = os.path.join(BASE_DIR, 'data', 'upload_exec.py')
-
-        start = datetime.now()
-        total_downloaded = 0
-        tg_message(f"🚀 SIKLUS DIMULAI\n⏰ {start:%Y-%m-%d %H:%M:%S}\n📋 Total akun: {total}\n📦 Limit: {limit if limit > 0 else 'tanpa batas'}")
-
-        for i, url in enumerate(accounts, 1):
-            if STOP:
-                break
-            
-            if not url or 'tiktok.com' not in url:
-                continue
-            
-            try:
-                username = url.split('@')[1].split('/')[0]
-            except:
-                username = "unknown"
-
-            logger.info(f"[{i}/{total}] Memproses: {url} (@{username})")
-            
-            user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
-            
-            cmd = [
-                "yt-dlp",
-                url,
-                "--impersonate", "chrome",
-                "--cookies", TT_COOKIES,
-                "--download-archive", user_archive,
-                "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
-                "--write-info-json", 
-                "--no-part", 
-                "--no-warnings",
-                "--ignore-errors",
-                "--restrict-filenames",
-                "--exec", f"{sys.executable} {upload_exec_path} {{}}", 
-            ]
-
-            if limit > 0:
-                remaining = limit - total_downloaded
-                if remaining <= 0:
-                    logger.info("Limit total tercapai. Berhenti.")
-                    break
-                cmd.extend(["--playlist-end", str(remaining)])
-
-            before_count = 0
-            if os.path.exists(user_archive):
-                with open(user_archive, 'r') as f:
-                    before_count = sum(1 for line in f)
-
-            subprocess.run(cmd)
-
-            after_count = 0
-            if os.path.exists(user_archive):
-                with open(user_archive, 'r') as f:
-                    after_count = sum(1 for line in f)
-            
-            new_videos = max(0, after_count - before_count)
-            total_downloaded += new_videos
-
-            tg_message(f"✅ [{i}/{total}] Selesai: @{username} (+{new_videos} video)")
-
-            if SLEEP_SECONDS > 0 and not STOP:
-                time.sleep(SLEEP_SECONDS)
-
-        # -------------------- HUGGING FACE BATCH UPLOAD (LARGE FOLDER) --------------------
-        hf_token = os.getenv("HF_TOKEN")
-        mp4_files = glob.glob(os.path.join(VIDEO_DIR, '*.mp4'))
-        
-        if mp4_files:
-            if hf_token:
-                staging_dir = os.path.join(BASE_DIR, 'hf_staging')
+            r = requests.post(url, data=data, files=files, timeout=timeout)
+            r.raise_for_status() 
+            return r.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
                 try:
-                    logger.info(f"☁️ Memulai upload_large_folder {len(mp4_files)} video ke Hugging Face...")
-                    # Ambil waktu WIB dan buat format folder YYYY/MM/DD
-                    waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
-                    date_folder = waktu_wib.strftime("%Y/%m/%d")
-                    
-                    # 1. Buat folder staging lokal
-                    target_dir = os.path.join(staging_dir, date_folder)
-                    os.makedirs(target_dir, exist_ok=True)
-                    
-                    # 2. Pindahkan file .mp4 dan .info.json ke folder staging
-                    for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
-                        if f.endswith('.mp4') or f.endswith('.info.json'):
-                            shutil.move(f, os.path.join(target_dir, os.path.basename(f)))
-                    
-                    # 3. Eksekusi upload_large_folder dari root staging_dir
-                    upload_large_folder(
-                        folder_path=staging_dir,
-                        repo_id="tafofyfe/ACPN",
-                        repo_type="dataset",
-                        token=hf_token
-                    )
-                    
-                    logger.info("✅ Batch upload_large_folder ke Hugging Face berhasil!")
-                    tg_message(f"☁️ HF Large Folder Upload: {len(mp4_files)} video sukses ke {date_folder}/")
-                    
-                except Exception as e:
-                    logger.error(f"❌ Gagal upload_large_folder HF: {e}")
-                    tg_message(f"❌ HF Upload Error: {e}")
-                finally:
-                    # 4. Bersihkan folder staging agar tidak menumpuk di server runner
-                    if os.path.exists(staging_dir):
-                        shutil.rmtree(staging_dir, ignore_errors=True)
+                    error_data = e.response.json()
+                    retry_after = error_data.get("parameters", {}).get("retry_after")
+                    if retry_after and isinstance(retry_after, int):
+                        wait_time = retry_after + 1 
+                        print(f"⚠️ Telegram rate limit (429). Menunggu {wait_time} detik...")
+                        time.sleep(wait_time)
+                        retries += 1
+                        continue 
+                    else:
+                        print("⚠️ Error 429 tanpa retry_after. Menunggu 10 detik.")
+                        time.sleep(10)
+                        retries += 1
+                        continue
+                except (json.JSONDecodeError, AttributeError):
+                    print("⚠️ Gagal parse error 429. Menunggu 10 detik.")
+                    time.sleep(10)
+                    retries += 1
+                    continue
             else:
-                logger.warning("⚠️ HF_TOKEN tidak ada. Skip upload HF.")
+                print(f"Telegram error {e.response.status_code}: {e.response.text}")
+                raise e
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Gagal koneksi: {e}")
+            raise e 
+    
+    raise Exception(f"Gagal mengirim request setelah {max_retries} kali percobaan.")
 
-            # CLEANUP FOLDER VIDEO (jaga-jaga jika ada file lain yang tersisa)
-            for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
-                try: os.remove(f)
-                except: pass
-            logger.info("🧹 Folder VIDEO_DIR dibersihkan.")
+# -------------------- Helpers dasar --------------------
+def find_info_json(video_path: str) -> str:
+    base, _ = os.path.splitext(video_path)
+    cand = base + ".info.json"
+    if os.path.exists(cand):
+        return cand
+    folder = os.path.dirname(video_path) or "."
+    name = os.path.basename(base)
+    for fn in os.listdir(folder):
+        if fn.startswith(name) and fn.endswith(".info.json"):
+            return os.path.join(folder, fn)
+    return ""
 
-        # kirim log
-        try:
-            tg_document(LOG_FILE, "📝 Log Siklus Pengunduhan")
-        except Exception:
-            pass
+def load_meta(info_path: str) -> dict:
+    try:
+        with open(info_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
 
-        # zip arsip
-        zip_path = os.path.join(BASE_DIR, 'arsip_ACPN.zip')
-        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as z:
-            for p in glob.glob(os.path.join(ARCHIVE_DIR, '*_ACPN.txt')):
-                z.write(p, os.path.basename(p))
-        tg_document(zip_path, "🗂️ Backup Arsip Siklus")
+def fmt_date(s: str) -> str:
+    try:
+        return datetime.strptime(s, "%Y%m%d").strftime("%d-%m-%Y")
+    except (ValueError, TypeError):
+        return s or "-"
 
-        end = datetime.now()
-        tg_message(
-            f"🏁 SIKLUS SELESAI\n"
-            f"⏱️ Durasi: {end - start}\n"
-            f"📦 Total video baru: {total_downloaded}\n"
-            f"⏰ {end:%Y-%m-%d %H:%M:%S}"
+def fmt_duration(d):
+    if isinstance(d, (int, float)) and d is not None:
+        return str(timedelta(seconds=int(d)))
+    if isinstance(d, str) and d.strip():
+        return d
+    return "-"
+
+def caption_from_meta(meta: dict, video_path: str) -> str:
+    uploader = meta.get("uploader") or meta.get("channel") or "-"
+    title = meta.get("title") or os.path.basename(video_path)
+    url = meta.get("webpage_url") or "-"
+    upload_date = fmt_date(meta.get("upload_date", ""))
+    duration = fmt_duration(meta.get("duration_string") or meta.get("duration"))
+    views = meta.get("view_count", "-")
+    likes = meta.get("like_count", "-")
+    comments = meta.get("comment_count", "-")
+
+    esc = lambda s: html.escape(str(s), quote=True)
+    uploader_e = esc(uploader); title_e = esc(title); url_e = esc(url)
+    upload_date_e = esc(upload_date); duration_e = esc(duration)
+    views_e = esc(views); likes_e = esc(likes); comments_e = esc(comments)
+
+    return (
+        f"<blockquote><b>{title_e}</b></blockquote>\n"
+        f"<blockquote>👤 #{uploader_e}</blockquote>\n"
+        f"<blockquote>📅 {upload_date_e} | ⏱️ {duration_e}</blockquote>\n"
+        f"<blockquote>👀 {views_e} | ❤️ {likes_e} | 💬 {comments_e}</blockquote>\n"
+        f"<blockquote>🔗 <a href=\"{url_e}\">Watch</a></blockquote>"
+    )
+
+# -------------------- Thumbnail utils --------------------
+def _ffprobe_duration(path: str) -> float | None:
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path
+        ], stderr=subprocess.STDOUT, text=True).strip()
+        return float(out)
+    except Exception:
+        return None
+
+def _ffmpeg_frame_thumbnail(video_path: str, when_sec: float, out_path: str) -> tuple[bool, str]:
+    try:
+        start = time.time()
+        subprocess.check_call([
+            "ffmpeg", "-y",
+            "-ss", f"{when_sec:.2f}",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-vf", "scale='min(320,iw)':'-2':flags=lanczos",
+            "-q:v", "3",
+            out_path
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.getsize(out_path) > 200_000:
+            subprocess.check_call([
+                "ffmpeg", "-y", "-i", out_path, "-q:v", "6", out_path
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ok = os.path.exists(out_path) and os.path.getsize(out_path) <= 200_000
+        dur = f"{(time.time()-start):.2f}s"
+        if ok:
+            return True, f"sukses (size={os.path.getsize(out_path)}B, waktu={dur})"
+        return False, f"gagal (size={os.path.getsize(out_path)}B > 200KB, waktu={dur})"
+    except subprocess.CalledProcessError:
+        return False, "ffmpeg error"
+    except Exception as e:
+        return False, f"exception: {e}"
+
+def _download_and_shrink(url: str, out_path: str) -> tuple[bool, str]:
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code >= 400:
+            return False, f"HTTP {r.status_code}"
+        with open(out_path, "wb") as f:
+            f.write(r.content)
+        tmp2 = out_path + ".tmp.jpg"
+        subprocess.check_call([
+            "ffmpeg", "-y", "-i", out_path,
+            "-vf", "scale='min(320,iw)':'-2':flags=lanczos",
+            "-q:v", "4",
+            tmp2
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.move(tmp2, out_path)
+        if os.path.getsize(out_path) <= 200_000:
+            return True, f"sukses (size={os.path.getsize(out_path)}B)"
+        return False, f"kebesaran (size={os.path.getsize(out_path)}B > 200KB)"
+    except subprocess.CalledProcessError:
+        return False, "ffmpeg shrink error"
+    except Exception as e:
+        return False, f"exception: {e}"
+
+def build_cover_and_thumb(video_path: str, meta: dict) -> tuple[str | None, str | None, str]:
+    tmpdir = tempfile.gettempdir()
+    cover_path = os.path.join(tmpdir, f"cover_{os.getpid()}_{os.path.basename(video_path)}.jpg")
+    thumb_path = os.path.join(tmpdir, f"thumb_{os.getpid()}_{os.path.basename(video_path)}.jpg")
+    logs = []
+    thumbs = {t.get("id"): t.get("url") for t in (meta.get("thumbnails") or []) if t.get("url")}
+    for key in ["dynamicCover", "cover", "originCover"]:
+        if key in thumbs:
+            logs.append(f"➡️  Coba metadata: {key}")
+            ok, reason = _download_and_shrink(thumbs[key], thumb_path)
+            logs.append(f"    └─ {reason}")
+            if ok:
+                shutil.copy2(thumb_path, cover_path)
+                logs.append(f"✅ Pakai {key}: thumb={os.path.getsize(thumb_path)}B, cover={os.path.getsize(cover_path)}B")
+                return cover_path, thumb_path, "\n".join(logs)
+    dur = meta.get("duration")
+    if not isinstance(dur, (int, float)):
+        dur = _ffprobe_duration(video_path) or 8.0
+    when_sec = max(1.0, float(dur) / 2.0)
+    logs.append(f"➡️  Fallback: frame tengah @ {when_sec:.2f}s")
+    ok, reason = _ffmpeg_frame_thumbnail(video_path, when_sec, thumb_path)
+    logs.append(f"    └─ {reason}")
+    if ok:
+        shutil.copy2(thumb_path, cover_path)
+        logs.append(f"✅ Pakai frame tengah: thumb={os.path.getsize(thumb_path)}B, cover={os.path.getsize(cover_path)}B")
+        return cover_path, thumb_path, "\n".join(logs)
+    logs.append("❌ Semua opsi gagal. Telegram akan pakai default (tanpa cover).")
+    return None, None, "\n".join(logs)
+
+# -------------------- Validasi file --------------------
+def _is_valid_file(path: str, label: str = "file") -> bool:
+    if not path or not os.path.exists(path):
+        return False
+    size = os.path.getsize(path)
+    if size == 0:
+        print(f"⚠️ {label} kosong (0 byte): {path}")
+        return False
+    return True
+
+# -------------------- Fallback: sendVideo tanpa cover --------------------
+def send_video_fallback(video_path: str, caption_html: str = "") -> int:
+    api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
+    print(f"🔄 Fallback: kirim video saja tanpa cover...")
+    with open(video_path, "rb") as vf:
+        data = {
+            "chat_id": UPLOAD_CHANNEL_ID,
+            "supports_streaming": "true",
+        }
+        if caption_html:
+            data["caption"] = caption_html
+            data["parse_mode"] = "HTML"
+        resp = send_telegram_request_with_retry(
+            url=api, data=data, files={"video": vf}, timeout=(30, 600)
         )
+    msg_id = resp.get("result", {}).get("message_id", -1)
+    if msg_id > 0:
+        print(f"✅ Fallback berhasil! message_id={msg_id}")
+    return msg_id
+
+# -------------------- Fungsi pengiriman utama --------------------
+def send_media_group_return_first_id(video_path: str, cover_path: str | None, thumb_path: str | None, caption_html: str = "") -> int:
+    if not (BOT_TOKEN and UPLOAD_CHANNEL_ID):
+        print("BOT_TOKEN/UPLOAD_CHANNEL_ID kosong")
+        sys.exit(3)
+
+    if not _is_valid_file(video_path, "Video"):
+        print(f"❌ Video tidak valid atau kosong, skip upload.")
+        return -1
+
+    if thumb_path and not _is_valid_file(thumb_path, "Thumbnail"):
+        thumb_path = None
+    if cover_path and not _is_valid_file(cover_path, "Cover"):
+        cover_path = None
+
+    api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMediaGroup"
+    media_items = [{"type": "video", "media": "attach://media1", "supports_streaming": True}]
+    if caption_html:
+        media_items[0]["caption"] = caption_html
+        media_items[0]["parse_mode"] = "HTML"
+    if thumb_path:
+        media_items[0]["thumbnail"] = "attach://thumb1"
+    include_photo = bool(cover_path)
+    if include_photo:
+        media_items.append({"type": "photo", "media": "attach://media2"})
+
+    try:
+        with open(video_path, "rb") as video_file:
+            files = {"media1": video_file}
+            thumb_file = open(thumb_path, "rb") if thumb_path else None
+            cover_file = open(cover_path, "rb") if include_photo else None
+
+            try:
+                if thumb_file: files["thumb1"] = thumb_file
+                if cover_file:
+                    mime = mimetypes.guess_type(cover_path)[0] or "image/jpeg"
+                    files["media2"] = (os.path.basename(cover_path), cover_file, mime)
+
+                resp = send_telegram_request_with_retry(
+                    url=api,
+                    data={"chat_id": UPLOAD_CHANNEL_ID, "media": json.dumps(media_items, ensure_ascii=False)},
+                    files=files
+                )
+
+                results = resp.get("result") or []
+                first_id = results[0]["message_id"] if results else -1
+                print(f"✅ Uploaded (album): {os.path.basename(video_path)} + {'cover' if include_photo else 'no-cover'} | first_message_id={first_id}")
+                return int(first_id) if first_id != -1 else -1
+            finally:
+                if thumb_file: thumb_file.close()
+                if cover_file: cover_file.close()
 
     except Exception as e:
-        logger.exception("Kesalahan fatal:")
-        tg_message(f"❌ ERROR FATAL: {e}")
-    finally:
-        _release_lock()
+        print(f"⚠️ sendMediaGroup gagal: {e}")
+        try:
+            return send_video_fallback(video_path, caption_html)
+        except Exception as e2:
+            print(f"❌ Fallback sendVideo juga gagal: {e2}")
+            return -1
 
-def main():
-    parser = argparse.ArgumentParser(description="ACPN - TikTok Downloader")
-    parser.add_argument('--limit', type=int, default=30,
-                        help='Maksimum jumlah video baru per siklus (default: 30, 0=tanpa batas)')
-    parser.add_argument('--loop', action='store_true',
-                        help='Mode loop (untuk VPS). Tanpa flag ini = single-run (untuk GitHub Actions)')
-    args = parser.parse_args()
-
-    if args.loop:
-        while not STOP:
-            run_cycle(limit=args.limit)
-            if STOP:
-                break
-            logger.info(f"Tidur {SLEEP_SECONDS} detik sebelum siklus berikutnya...")
-            time.sleep(SLEEP_SECONDS)
-    else:
-        run_cycle(limit=args.limit)
-
+# -------------------- Main --------------------
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2:
+        print("Usage: upload_exec.py <filepath>")
+        sys.exit(1)
+
+    file_path = sys.argv[1].strip()
+    if (file_path.startswith("'") and file_path.endswith("'")) or (file_path.startswith('"') and file_path.endswith('"')):
+        file_path = file_path[1:-1]
+
+    if not os.path.exists(file_path):
+        print(f"File tidak ditemukan: {file_path}")
+        sys.exit(1)
+    if not file_path.lower().endswith(".mp4"):
+        print(f"⏭️  Skip non-mp4: {file_path}")
+        sys.exit(0)
+    if not (BOT_TOKEN and UPLOAD_CHANNEL_ID):
+        print("BOT_TOKEN/UPLOAD_CHANNEL_ID kosong")
+        sys.exit(3)
+
+    info_path = find_info_json(file_path)
+    meta = load_meta(info_path) if info_path else {}
+    caption = caption_from_meta(meta, file_path)
+
+    cover_path = None
+    thumb_path = None
+    
+    try:
+        cover_path, thumb_path, thumb_info = build_cover_and_thumb(file_path, meta)
+        print(thumb_info)
+
+        first_msg_id = send_media_group_return_first_id(file_path, cover_path, thumb_path, caption_html=caption)
+        
+        if first_msg_id and first_msg_id > 0:
+            print("✅ Upload Telegram berhasil! (File dipertahankan untuk batch upload HF)")
+        else:
+            print("⚠️ Upload Telegram gagal atau tidak dapat message_id. (File dipertahankan untuk retry/HF)")
+
+    except Exception as e:
+        print(f"❌ Gagal upload: {e}")
+    finally:
+        # Hapus file cover sementara saja, JANGAN hapus video dan JSON
+        for p in (cover_path, thumb_path):
+            if p and os.path.exists(p):
+                try: os.remove(p)
+                except Exception: pass
+                
+    sys.exit(0)
