@@ -13,7 +13,7 @@ import subprocess
 import shutil
 from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
-from huggingface_hub import upload_large_folder
+from huggingface_hub import HfApi
 
 # === BASE DIR ===
 BASE_DIR = os.environ.get('GITHUB_WORKSPACE', os.path.dirname(os.path.abspath(__file__)))
@@ -224,12 +224,12 @@ def run_cycle(limit=30):
                         if f.endswith('.mp4') or f.endswith('.info.json'):
                             shutil.move(f, os.path.join(target_dir, os.path.basename(f)))
                     
-                    # 3. Eksekusi upload_large_folder dari root staging_dir
-                    upload_large_folder(
+                    # 3. Eksekusi upload_large_folder menggunakan HfApi
+                    api = HfApi(token=hf_token)
+                    api.upload_large_folder(
                         folder_path=staging_dir,
                         repo_id="tafofyfe/ACPN",
-                        repo_type="dataset",
-                        token=hf_token
+                        repo_type="dataset"
                     )
                     
                     logger.info("✅ Batch upload_large_folder ke Hugging Face berhasil!")
