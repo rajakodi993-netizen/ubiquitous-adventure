@@ -217,7 +217,7 @@ def run_cycle(limit=10):
         
         # Parallel Execution
         # 5 workers is safe for Github Actions (2 core)
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures = {executor.submit(process_account, url, limit, upload_exec_path): url for url in accounts}
             
             for i, future in enumerate(as_completed(futures), 1):
