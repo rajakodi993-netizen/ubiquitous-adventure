@@ -94,7 +94,7 @@ jobs:
           SLEEP_SECONDS: "5"
         run: |
           LIMIT="${{ github.event.inputs.limit || '150' }}"
-          python ACPN.py --limit "$LIMIT"
+          python ACPN.py
 
       - name: Run Gallery Worker (Photo)
         # HANYA jalan jika dipicu MANUAL dan centang 'run_gallery'
