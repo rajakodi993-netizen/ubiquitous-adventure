@@ -153,8 +153,6 @@ def process_account(url: str, limit: int, upload_exec_path: str) -> int:
         "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
         "--write-info-json", 
         "--no-part",
-        "--no-warnings",
-        "--ignore-errors",
         "--restrict-filenames",
         "--exec", f"{sys.executable} {upload_exec_path} {{}}",
     ]
