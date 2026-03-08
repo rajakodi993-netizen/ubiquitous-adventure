@@ -142,7 +142,7 @@ def process_account(url: str, limit: int, upload_exec_path: str) -> int:
     except:
         username = "unknown"
 
-    logger.info(f"Memproses: @{username}")
+    logger.info(f"🔍 Mengecek: @{username} ...")
     user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
     
     cmd = [
@@ -163,27 +163,37 @@ def process_account(url: str, limit: int, upload_exec_path: str) -> int:
     if limit > 0:
         cmd.extend(["--playlist-end", str(limit)])
 
-    # Count before
+    # Hitung jumlah arsip sebelum proses
     before_count = 0
     if os.path.exists(user_archive):
         with open(user_archive, 'r') as f:
             before_count = sum(1 for line in f)
 
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    # Eksekusi yt-dlp dan tangkap output/error-nya
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
 
-    # Count after
+    # Hitung jumlah arsip setelah proses
     after_count = 0
     if os.path.exists(user_archive):
         with open(user_archive, 'r') as f:
             after_count = sum(1 for line in f)
     
     new_videos = max(0, after_count - before_count)
+    
+    # --- LOGIKA LOGGING YANG BARU ---
     if new_videos > 0:
         tg_message(f"✅ @{username}: +{new_videos} video")
-        logger.info(f"@{username}: +{new_videos} video")
-    
+        logger.info(f"✅ @{username}: Berhasil mendapat {new_videos} video baru.")
+    else:
+        # Cek apakah ada error dari yt-dlp
+        if result.returncode != 0 and result.stderr:
+            # Ambil baris pertama dari pesan error agar log tidak terlalu panjang
+            err_msg = result.stderr.strip().split('\n')[0][:150]
+            logger.warning(f"⚠️ @{username}: Gagal/Error - {err_msg}")
+        else:
+            logger.info(f"⏭️  @{username}: Aman, tapi tidak ada video baru.")
+            
     return new_videos
-
 def run_cycle(limit=10):
     global STOP
     if not _acquire_lock():
