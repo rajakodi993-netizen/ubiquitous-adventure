@@ -1,4 +1,5 @@
 requests
 python-dotenv
-tqdmhuggingface_hub
+tqdm
+huggingface_hub
 
