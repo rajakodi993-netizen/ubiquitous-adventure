@@ -10,8 +10,6 @@ import signal
 import pathlib
 import argparse
 import subprocess
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -35,31 +33,22 @@ logger = logging.getLogger('acpn')
 logger.setLevel(logging.INFO)
 fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%Y-%m-%d %H:%M:%S')
 fh = RotatingFileHandler(LOG_FILE, maxBytes=10_000_000, backupCount=5)
-#fh.setFormatter(fmt) # RotatingFileHandler formatter set below handled by basicConfig in other scripts but here effectively
 fh.setFormatter(fmt)
-
 sh = logging.StreamHandler(sys.stdout)
 sh.setFormatter(fmt)
 logger.handlers = [fh, sh]
 
 # === TELEGRAM ===
 import requests
-tg_lock = threading.Lock()
 
 def tg_message(text: str) -> bool:
     if not (BOT_TOKEN and NOTIF_CHANNEL_ID):
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        with tg_lock:
-            # Simple retry mechanism
-            for _ in range(3):
-                r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "text": text}, timeout=10)
-                if r.status_code == 429:
-                    time.sleep(int(r.headers.get("Retry-After", 5)))
-                    continue
-                r.raise_for_status()
-                return True
+        r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "text": text})
+        r.raise_for_status()
+        return True
     except Exception as e:
         logger.error(f"Gagal kirim pesan TG: {e}")
         return False
@@ -71,11 +60,10 @@ def tg_document(file_path: str, caption: str = "") -> bool:
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     try:
-        with tg_lock:
-            with open(file_path, 'rb') as f:
-                r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "caption": caption}, files={"document": f}, timeout=60)
-            r.raise_for_status()
-            return True
+        with open(file_path, 'rb') as f:
+            r = requests.post(url, data={"chat_id": NOTIF_CHANNEL_ID, "caption": caption}, files={"document": f})
+        r.raise_for_status()
+        return True
     except Exception as e:
         logger.error(f"Gagal kirim dokumen TG: {e}")
         return False
@@ -122,6 +110,7 @@ def load_accounts() -> list:
         if os.path.exists(ACCOUNTS_FILE):
             with open(ACCOUNTS_FILE, 'r') as f:
                 data = json.load(f)
+            # Support list of strings or objects (kalau object, ambil field 'url')
             clean_list = []
             for item in data:
                 if isinstance(item, str):
@@ -133,68 +122,7 @@ def load_accounts() -> list:
         logger.error(f"Gagal memuat akun: {e}")
     return []
 
-def process_account(url: str, limit: int, upload_exec_path: str) -> int:
-    if STOP or not url or 'tiktok.com' not in url:
-        return 0
-    
-    try:
-        username = url.split('@')[1].split('/')[0]
-    except:
-        username = "unknown"
-
-    logger.info(f"🔍 Mengecek: @{username} ...")
-    user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
-    
-    cmd = [
-        "yt-dlp",
-        url,
-        "--cookies", TT_COOKIES,
-        "--download-archive", user_archive,
-        "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
-        "--write-info-json", 
-        "--no-part",
-        "--restrict-filenames",
-        "--exec", f"{sys.executable} {upload_exec_path} {{}}",
-    ]
-
-    # Limit per account check
-    if limit > 0:
-        cmd.extend(["--playlist-end", str(limit)])
-
-    # Hitung jumlah arsip sebelum proses
-    before_count = 0
-    if os.path.exists(user_archive):
-        with open(user_archive, 'r') as f:
-            before_count = sum(1 for line in f)
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    # Count after
-    after_count = 0
-    if os.path.exists(user_archive):
-        with open(user_archive, 'r') as f:
-            after_count = sum(1 for line in f)
-    
-    new_videos = max(0, after_count - before_count)
-    if new_videos > 0:
-        tg_message(f"✅ @{username}: +{new_videos} video")
-        logger.info(f"✅ @{username}: Berhasil mendapat {new_videos} video baru.")
-    else:
-        # Cek apakah ada error
-        if result.returncode != 0 and result.stderr:
-            err_msg = result.stderr.strip().split('\n')[0][:150]
-            logger.warning(f"⚠️ @{username}: Error - {err_msg}")
-        else:
-            # JIKA AMAN TAPI 0 VIDEO, TAMPILKAN LOG ASLI YT-DLP
-            # Kita ambil 100 karakter terakhir dari output yt-dlp
-            yt_dlp_log = result.stdout.strip().replace('\n', ' ')
-            if len(yt_dlp_log) > 120:
-                yt_dlp_log = "..." + yt_dlp_log[-120:]
-            logger.info(f"⏭️  @{username}: Aman (0 video). Status yt-dlp: {yt_dlp_log}")
-            
-    return new_videos
-    
-def run_cycle(limit=10):
+def run_cycle(limit=30):
     global STOP
     if not _acquire_lock():
         return
@@ -203,74 +131,145 @@ def run_cycle(limit=10):
         accounts = load_accounts()
         total = len(accounts)
         if total == 0:
-            logger.warning("Tidak ada akun.")
+            logger.warning("Tidak ada akun untuk diproses.")
             return
 
         os.makedirs(VIDEO_DIR, exist_ok=True)
         os.makedirs(ARCHIVE_DIR, exist_ok=True)
+
+        # Path ke upload_exec.py (relatif terhadap BASE_DIR)
         upload_exec_path = os.path.join(BASE_DIR, 'data', 'upload_exec.py')
 
         start = datetime.now()
-        tg_message(f"🚀 SIKLUS DIMULAI (Parallel)\n⏰ {start:%H:%M:%S}\n📋 {total} Akun\n⚡ Limit: {limit}")
+        total_downloaded = 0
+        tg_message(f"🚀 SIKLUS DIMULAI\n⏰ {start:%Y-%m-%d %H:%M:%S}\n📋 Total akun: {total}\n📦 Limit: {limit if limit > 0 else 'tanpa batas'}")
 
-        total_new = 0
-        
-        # Parallel Execution
-        # 5 workers is safe for Github Actions (2 core)
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            futures = {executor.submit(process_account, url, limit, upload_exec_path): url for url in accounts}
+        for i, url in enumerate(accounts, 1):
+            if STOP:
+                break
             
-            for i, future in enumerate(as_completed(futures), 5):
-                if STOP: 
-                    executor.shutdown(wait=False, cancel_futures=True)
+            if not url or 'tiktok.com' not in url:
+                continue
+            
+            # Extract username simple
+            try:
+                username = url.split('@')[1].split('/')[0]
+            except:
+                username = "unknown"
+
+            logger.info(f"[{i}/{total}] Memproses: {url} (@{username})")
+            
+            # Setup archive per user
+            user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
+            
+            # Hitung jumlah video sebelum download (untuk stats)
+            # Kita pakai output yt-dlp json dump atau hitung file?
+            #yt-dlp tidak menyimpan file jika sudah ada di archive.
+            # Jadi kita hitung jumlah baris di archive file sebelum dan sesudah?
+            # Atau parse output yt-dlp? Parse output lebih akurat.
+            
+            # Command yt-dlp
+            # --exec: Jalankan script upload setelah download
+            # Kita pass argument ke script upload via env vars atau args
+            # Arg: filename
+            
+            cmd = [
+                "yt-dlp",
+                url,
+                "--cookies", TT_COOKIES,
+                "--download-archive", user_archive,
+                "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
+                "--write-info-json",  # Wajib untuk upload_exec.py baca metadata
+                "--no-part",  # Jangan bikin .part file
+                "--no-warnings",
+                "--ignore-errors",
+                "--restrict-filenames",
+                "--exec", f"{sys.executable} {upload_exec_path} {{}}", # Exec upload immediately
+            ]
+
+            # Tambahkan limit per akun jika ada global limit?
+            # Logic asli: limit adalah total video per siklus atau per akun? 
+            # "Maksimum jumlah video per run" -> biasanya global.
+            # Tapi yt-dlp --max-downloads itu per command execution (per akun).
+            # Jika limit global, kita harus track.
+            # Simplifikasi: Limit diaplikasikan ke setiap akun (per-user limit) atau playlist items?
+            # --playlist-end LIMIT.
+            if limit > 0:
+                # Cek sisa kuota global?
+                remaining = limit - total_downloaded
+                if remaining <= 0:
+                    logger.info("Limit total tercapai. Berhenti.")
                     break
-                try:
-                    new_count = future.result()
-                    total_new += new_count
-                except Exception as e:
-                    logger.error(f"Error thread: {e}")
-                
-                # Progress log every 10 accounts
-                if i % 10 == 0:
-                    logger.info(f"Progress: {i}/{total} akun selesai..")
+                cmd.extend(["--playlist-end", str(remaining)])
+
+            # Capture stats
+            # Kita baca archive sebelum dan sesudah
+            before_count = 0
+            if os.path.exists(user_archive):
+                with open(user_archive, 'r') as f:
+                    before_count = sum(1 for line in f)
+
+            subprocess.run(cmd)
+
+            after_count = 0
+            if os.path.exists(user_archive):
+                with open(user_archive, 'r') as f:
+                    after_count = sum(1 for line in f)
+            
+            new_videos = max(0, after_count - before_count)
+            total_downloaded += new_videos
+
+            tg_message(f"✅ [{i}/{total}] Selesai: @{username} (+{new_videos} video)")
+
+            # Jeda antar akun
+            if SLEEP_SECONDS > 0 and not STOP:
+                time.sleep(SLEEP_SECONDS)
 
         # kirim log
         try:
-            tg_document(LOG_FILE, "📝 Log Siklus")
-        except: pass
+            tg_document(LOG_FILE, "📝 Log Siklus Pengunduhan")
+        except Exception:
+            pass
 
         # zip arsip
         zip_path = os.path.join(BASE_DIR, 'arsip_ACPN.zip')
         with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as z:
             for p in glob.glob(os.path.join(ARCHIVE_DIR, '*_ACPN.txt')):
                 z.write(p, os.path.basename(p))
-        tg_document(zip_path)
+        tg_document(zip_path, "🗂️ Backup Arsip Siklus")
 
         end = datetime.now()
         tg_message(
             f"🏁 SIKLUS SELESAI\n"
             f"⏱️ Durasi: {end - start}\n"
-            f"📦 Total baru: {total_new}"
+            f"📦 Total video baru: {total_downloaded}\n"
+            f"⏰ {end:%Y-%m-%d %H:%M:%S}"
         )
 
     except Exception as e:
         logger.exception("Kesalahan fatal:")
-        tg_message(f"❌ ERROR: {e}")
+        tg_message(f"❌ ERROR FATAL: {e}")
     finally:
         _release_lock()
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--limit', type=int, default=10)
-    parser.add_argument('--loop', action='store_true')
+    parser = argparse.ArgumentParser(description="ACPN - TikTok Downloader")
+    parser.add_argument('--limit', type=int, default=30,
+                        help='Maksimum jumlah video baru per siklus (default: 30, 0=tanpa batas)')
+    parser.add_argument('--loop', action='store_true',
+                        help='Mode loop (untuk VPS). Tanpa flag ini = single-run (untuk GitHub Actions)')
     args = parser.parse_args()
 
     if args.loop:
+        # Mode VPS: loop terus-menerus
         while not STOP:
             run_cycle(limit=args.limit)
-            if STOP: break
+            if STOP:
+                break
+            logger.info(f"Tidur {SLEEP_SECONDS} detik sebelum siklus berikutnya...")
             time.sleep(SLEEP_SECONDS)
     else:
+        # Mode GitHub Actions: single-run
         run_cycle(limit=args.limit)
 
 if __name__ == "__main__":
