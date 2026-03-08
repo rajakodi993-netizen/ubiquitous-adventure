@@ -10,8 +10,10 @@ import signal
 import pathlib
 import argparse
 import subprocess
-from datetime import datetime
+import shutil
+from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
+from huggingface_hub import upload_large_folder
 
 # === BASE DIR ===
 BASE_DIR = os.environ.get('GITHUB_WORKSPACE', os.path.dirname(os.path.abspath(__file__)))
@@ -110,7 +112,6 @@ def load_accounts() -> list:
         if os.path.exists(ACCOUNTS_FILE):
             with open(ACCOUNTS_FILE, 'r') as f:
                 data = json.load(f)
-            # Support list of strings or objects (kalau object, ambil field 'url')
             clean_list = []
             for item in data:
                 if isinstance(item, str):
@@ -137,7 +138,6 @@ def run_cycle(limit=30):
         os.makedirs(VIDEO_DIR, exist_ok=True)
         os.makedirs(ARCHIVE_DIR, exist_ok=True)
 
-        # Path ke upload_exec.py (relatif terhadap BASE_DIR)
         upload_exec_path = os.path.join(BASE_DIR, 'data', 'upload_exec.py')
 
         start = datetime.now()
@@ -151,7 +151,6 @@ def run_cycle(limit=30):
             if not url or 'tiktok.com' not in url:
                 continue
             
-            # Extract username simple
             try:
                 username = url.split('@')[1].split('/')[0]
             except:
@@ -159,51 +158,30 @@ def run_cycle(limit=30):
 
             logger.info(f"[{i}/{total}] Memproses: {url} (@{username})")
             
-            # Setup archive per user
             user_archive = os.path.join(ARCHIVE_DIR, f"{username}_ACPN.txt")
-            
-            # Hitung jumlah video sebelum download (untuk stats)
-            # Kita pakai output yt-dlp json dump atau hitung file?
-            #yt-dlp tidak menyimpan file jika sudah ada di archive.
-            # Jadi kita hitung jumlah baris di archive file sebelum dan sesudah?
-            # Atau parse output yt-dlp? Parse output lebih akurat.
-            
-            # Command yt-dlp
-            # --exec: Jalankan script upload setelah download
-            # Kita pass argument ke script upload via env vars atau args
-            # Arg: filename
             
             cmd = [
                 "yt-dlp",
                 url,
+                "--impersonate", "chrome",
                 "--cookies", TT_COOKIES,
                 "--download-archive", user_archive,
                 "--output", f"{VIDEO_DIR}/%(uploader)s_%(id)s.%(ext)s",
-                "--write-info-json",  # Wajib untuk upload_exec.py baca metadata
-                "--no-part",  # Jangan bikin .part file
+                "--write-info-json", 
+                "--no-part", 
                 "--no-warnings",
                 "--ignore-errors",
                 "--restrict-filenames",
-                "--exec", f"{sys.executable} {upload_exec_path} {{}}", # Exec upload immediately
+                "--exec", f"{sys.executable} {upload_exec_path} {{}}", 
             ]
 
-            # Tambahkan limit per akun jika ada global limit?
-            # Logic asli: limit adalah total video per siklus atau per akun? 
-            # "Maksimum jumlah video per run" -> biasanya global.
-            # Tapi yt-dlp --max-downloads itu per command execution (per akun).
-            # Jika limit global, kita harus track.
-            # Simplifikasi: Limit diaplikasikan ke setiap akun (per-user limit) atau playlist items?
-            # --playlist-end LIMIT.
             if limit > 0:
-                # Cek sisa kuota global?
                 remaining = limit - total_downloaded
                 if remaining <= 0:
                     logger.info("Limit total tercapai. Berhenti.")
                     break
                 cmd.extend(["--playlist-end", str(remaining)])
 
-            # Capture stats
-            # Kita baca archive sebelum dan sesudah
             before_count = 0
             if os.path.exists(user_archive):
                 with open(user_archive, 'r') as f:
@@ -221,9 +199,57 @@ def run_cycle(limit=30):
 
             tg_message(f"✅ [{i}/{total}] Selesai: @{username} (+{new_videos} video)")
 
-            # Jeda antar akun
             if SLEEP_SECONDS > 0 and not STOP:
                 time.sleep(SLEEP_SECONDS)
+
+        # -------------------- HUGGING FACE BATCH UPLOAD (LARGE FOLDER) --------------------
+        hf_token = os.getenv("HF_TOKEN")
+        mp4_files = glob.glob(os.path.join(VIDEO_DIR, '*.mp4'))
+        
+        if mp4_files:
+            if hf_token:
+                staging_dir = os.path.join(BASE_DIR, 'hf_staging')
+                try:
+                    logger.info(f"☁️ Memulai upload_large_folder {len(mp4_files)} video ke Hugging Face...")
+                    # Ambil waktu WIB dan buat format folder YYYY/MM/DD
+                    waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+                    date_folder = waktu_wib.strftime("%Y/%m/%d")
+                    
+                    # 1. Buat folder staging lokal
+                    target_dir = os.path.join(staging_dir, date_folder)
+                    os.makedirs(target_dir, exist_ok=True)
+                    
+                    # 2. Pindahkan file .mp4 dan .info.json ke folder staging
+                    for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
+                        if f.endswith('.mp4') or f.endswith('.info.json'):
+                            shutil.move(f, os.path.join(target_dir, os.path.basename(f)))
+                    
+                    # 3. Eksekusi upload_large_folder dari root staging_dir
+                    upload_large_folder(
+                        folder_path=staging_dir,
+                        repo_id="tafofyfe/ACPN",
+                        repo_type="dataset",
+                        token=hf_token
+                    )
+                    
+                    logger.info("✅ Batch upload_large_folder ke Hugging Face berhasil!")
+                    tg_message(f"☁️ HF Large Folder Upload: {len(mp4_files)} video sukses ke {date_folder}/")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Gagal upload_large_folder HF: {e}")
+                    tg_message(f"❌ HF Upload Error: {e}")
+                finally:
+                    # 4. Bersihkan folder staging agar tidak menumpuk di server runner
+                    if os.path.exists(staging_dir):
+                        shutil.rmtree(staging_dir, ignore_errors=True)
+            else:
+                logger.warning("⚠️ HF_TOKEN tidak ada. Skip upload HF.")
+
+            # CLEANUP FOLDER VIDEO (jaga-jaga jika ada file lain yang tersisa)
+            for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
+                try: os.remove(f)
+                except: pass
+            logger.info("🧹 Folder VIDEO_DIR dibersihkan.")
 
         # kirim log
         try:
@@ -261,7 +287,6 @@ def main():
     args = parser.parse_args()
 
     if args.loop:
-        # Mode VPS: loop terus-menerus
         while not STOP:
             run_cycle(limit=args.limit)
             if STOP:
@@ -269,7 +294,6 @@ def main():
             logger.info(f"Tidur {SLEEP_SECONDS} detik sebelum siklus berikutnya...")
             time.sleep(SLEEP_SECONDS)
     else:
-        # Mode GitHub Actions: single-run
         run_cycle(limit=args.limit)
 
 if __name__ == "__main__":
