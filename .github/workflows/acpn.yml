@@ -93,7 +93,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SLEEP_SECONDS: "5"
         run: |
-          LIMIT="${{ github.event.inputs.limit || '150' }}"
           python ACPN.py
 
       - name: Run Gallery Worker (Photo)
