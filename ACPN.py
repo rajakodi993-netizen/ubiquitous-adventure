@@ -223,7 +223,7 @@ def run_cycle(limit=10):
                 if i % 10 == 0 or i == total:
                     logger.info(f"Progress: {i}/{total} akun selesai diperiksa.")
 
-        # -------------------- HUGGING FACE BATCH UPLOAD (LARGE FOLDER) --------------------
+# -------------------- HUGGING FACE BATCH UPLOAD (LARGE FOLDER) --------------------
         hf_token = os.getenv("HF_TOKEN")
         mp4_files = glob.glob(os.path.join(VIDEO_DIR, '*.mp4'))
         
@@ -235,12 +235,23 @@ def run_cycle(limit=10):
                     waktu_wib = datetime.now(timezone.utc) + timedelta(hours=7)
                     date_folder = waktu_wib.strftime("%Y/%m/%d")
                     
+                    # 1. Buat path folder utama berdasarkan tanggal
                     target_dir = os.path.join(staging_dir, date_folder)
-                    os.makedirs(target_dir, exist_ok=True)
                     
+                    # 2. Tentukan path untuk sub-folder Video dan Metadata
+                    video_dir = os.path.join(target_dir, 'Video')
+                    metadata_dir = os.path.join(target_dir, 'Metadata')
+                    
+                    # 3. Buat foldernya (exist_ok=True agar tidak error jika folder sudah ada)
+                    os.makedirs(video_dir, exist_ok=True)
+                    os.makedirs(metadata_dir, exist_ok=True)
+                    
+                    # 4. Pindahkan file sesuai ekstensinya
                     for f in glob.glob(os.path.join(VIDEO_DIR, '*')):
-                        if f.endswith('.mp4') or f.endswith('.info.json'):
-                            shutil.move(f, os.path.join(target_dir, os.path.basename(f)))
+                        if f.endswith('.mp4'):
+                            shutil.move(f, os.path.join(video_dir, os.path.basename(f)))
+                        elif f.endswith('.info.json'):
+                            shutil.move(f, os.path.join(metadata_dir, os.path.basename(f)))
                     
                     api = HfApi(token=hf_token)
                     api.upload_large_folder(
