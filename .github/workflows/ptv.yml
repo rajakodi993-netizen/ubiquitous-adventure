@@ -60,9 +60,16 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Tambahkan file satu per satu dengan pengaman (|| true)
-          git add tv_channels.m3u backup_files/ || true
-          git add tv_channels_filtered.m3u || true
+          # Tambahkan semua file yang berubah
+          git add . || true
           
+          # Lakukan commit
+          git commit -m "Auto-update & filter playlist [skip ci]" || echo "Tidak ada perubahan"
+          
+          # 1. Tarik dan gabungkan riwayat terbaru dari GitLab agar sejajar
+          git pull origin main --rebase
+          
+          # 2. Lakukan push dengan aman
+          git push origin HEAD:main
           git commit -m "Auto-update & filter playlist [skip ci]" || echo "Tidak ada perubahan"
           git push origin HEAD:main
