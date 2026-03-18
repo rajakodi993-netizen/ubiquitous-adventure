@@ -43,7 +43,7 @@ jobs:
 
       - name: Run IPTV Checker & Filter
         run: |
-          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 10
+          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 100 -t 4 -R 0
           mv *working*.m3u tv_channels_filtered.m3u || echo "File filtered tidak ditemukan"
 
       # --- 4. KEMBALIKAN HASIL KE GITLAB ---
