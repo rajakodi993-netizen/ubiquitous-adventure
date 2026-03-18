@@ -44,7 +44,7 @@ jobs:
       - name: Run IPTV Checker & Filter
         run: |
           # Jalankan checker dengan mode agresif
-          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 80 -t 4 -R 0
+          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 20 -t 4 -R 0
           
           # Rename file hasil (sekarang mendukung *working.m3u8 maupun *working.m3u)
           mv *_working.m3u* tv_channels_filtered.m3u || echo "File working tidak ditemukan via mv"
