@@ -43,18 +43,26 @@ jobs:
 
       - name: Run IPTV Checker & Filter
         run: |
-          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 100 -t 4 -R 0
-          mv *working*.m3u tv_channels_filtered.m3u || echo "File filtered tidak ditemukan"
+          # Jalankan checker
+          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 20 -t 4 -R 0
+          
+          # Cari file hasil split (yang mengandung kata 'working' atau 'online') lalu rename
+          find . -maxdepth 1 \( -name "*working*.m3u" -o -name "*online*.m3u" \) -exec mv {} tv_channels_filtered.m3u \; || true
+          
+          # Jika file filtered tetap tidak ada (mungkin karena semua channel mati), buat file kosong
+          if [ ! -f tv_channels_filtered.m3u ]; then
+            echo "⚠️ File hasil filter tidak ditemukan. Membuat file kosong agar Git tidak error."
+            touch tv_channels_filtered.m3u
+          fi
 
-      # --- 4. KEMBALIKAN HASIL KE GITLAB ---
       - name: Commit and Push back to GitLab
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          git add tv_channels.m3u tv_channels_filtered.m3u backup_files/
+          # Tambahkan file satu per satu dengan pengaman (|| true)
+          git add tv_channels.m3u backup_files/ || true
+          git add tv_channels_filtered.m3u || true
           
-          git commit -m "Auto-update & filter playlist from GitHub Actions [skip ci]" || echo "Tidak ada perubahan"
-          
-          # Karena dari awal kita clone dari GitLab, tujuan push 'origin' otomatis mengarah ke GitLab
+          git commit -m "Auto-update & filter playlist [skip ci]" || echo "Tidak ada perubahan"
           git push origin HEAD:main
