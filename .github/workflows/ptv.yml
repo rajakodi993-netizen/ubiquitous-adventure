@@ -1,0 +1,60 @@
+name: IPTV Aggregator & Checker (GitLab Sync)
+
+on:
+  schedule:
+    - cron: '0 0,12 * * *' # Jalan otomatis setiap jam 00:00 dan 12:00 UTC
+  workflow_dispatch: # Tombol jalankan manual
+
+jobs:
+  update-playlist:
+    runs-on: ubuntu-latest
+
+    steps:
+      # --- 1. TARIK KODE DARI GITLAB ---
+      - name: Tarik Repository dari GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          # Menggunakan token untuk clone dari GitLab ke folder saat ini (.)
+          git clone https://oauth2:${GITLAB_TOKEN}@gitlab.com/aditya-lika-ardiansyah/iptv-aggregate.git .
+
+      # --- 2. PERSIAPAN LINGKUNGAN ---
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies (FFmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python Dependencies
+        run: pip install requests python-dotenv aiohttp
+
+      - name: Setup IPTV Checker
+        run: |
+          git clone https://github.com/kristofferR/IPTVChecker-Python.git iptv_checker_tool
+          pip install -r iptv_checker_tool/requirements.txt
+
+      # --- 3. EKSEKUSI SCRIPT (Yang ditarik dari GitLab) ---
+      - name: Run Aggregator
+        run: python aggregator.py
+
+      - name: Run IPTV Checker & Filter
+        run: |
+          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 10
+          mv *working*.m3u tv_channels_filtered.m3u || echo "File filtered tidak ditemukan"
+
+      # --- 4. KEMBALIKAN HASIL KE GITLAB ---
+      - name: Commit and Push back to GitLab
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add tv_channels.m3u tv_channels_filtered.m3u backup_files/
+          
+          git commit -m "Auto-update & filter playlist from GitHub Actions [skip ci]" || echo "Tidak ada perubahan"
+          
+          # Karena dari awal kita clone dari GitLab, tujuan push 'origin' otomatis mengarah ke GitLab
+          git push origin HEAD:main
