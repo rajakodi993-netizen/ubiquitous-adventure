@@ -63,19 +63,27 @@ jobs:
 
       - name: 🚀 Upload ke Internet Archive (Official CLI)
         env:
-          # Alat 'ia' akan OTOMATIS mendeteksi dan menggunakan 2 variabel ini
           IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
           IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
         run: |
+          # 1. BIKIN FILE KONFIGURASI IA SECARA PAKSA (SILENT MODE)
+          # Tool ini mewajibkan adanya file ~/.config/ia.ini
+          echo "Mempersiapkan otentikasi Internet Archive..."
+          mkdir -p ~/.config
+          cat <<EOF > ~/.config/ia.ini
+          [s3]
+          access = $IA_ACCESS_KEY
+          secret = $IA_SECRET_KEY
+          EOF
+          
+          # 2. EKSEKUSI UPLOAD
           BUCKET_NAME="pl-x8a9bf2k4m-2026"
           
           echo "Mengunggah file m3u menggunakan IA CLI..."
-          
-          # Bersih tanpa argumen kunci. Langsung upload dan pasang metadata.
           ia upload $BUCKET_NAME tv_channels_filtered.m3u \
             --metadata="title:IPTV Filtered Playlist" \
             --metadata="mediatype:data" \
-            --metadata="creator:zzz"
+            --metadata="creator:A"
             
       - name: 🏷️ Upload Backup ZIP ke GitHub Releases
         env:
