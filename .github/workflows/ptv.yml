@@ -1,20 +1,32 @@
-name: IPTV Master Pipeline (Aggregator -> Checker -> S3/Release)
+name: IPTV Master Pipeline (GitLab Source -> Checker -> S3/Release)
 
 on:
   schedule:
-    # Berjalan otomatis 2 kali sehari (Jam 00:00 dan 12:00 UTC / Jam 07:00 dan 19:00 WIB)
     - cron: '0 0,12 * * *'
-  workflow_dispatch: # Tombol jalankan manual
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Wajib agar bot diizinkan membuat rilis GitHub
+      contents: write 
 
     steps:
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout GitHub repo
         uses: actions/checkout@v4
+
+      # --- INI DIA BAGIAN YANG HILANG! ---
+      - name: 🧲 Tarik Script Asli dari GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          echo "Menarik aggregator.py, config.env, dll dari GitLab..."
+          git clone https://oauth2:${GITLAB_TOKEN}@gitlab.com/aditya-lika-ardiansyah/iptv-aggregate.git gitlab_data
+          
+          # Pindahkan semua isi folder GitLab ke ruang kerja GitHub Actions
+          cp -a gitlab_data/. .
+          rm -rf gitlab_data
+      # -----------------------------------
 
       - name: ⚙️ Set up Python 3.10
         uses: actions/setup-python@v5
@@ -35,47 +47,32 @@ jobs:
         run: |
           git clone https://github.com/kristofferR/IPTVChecker-Python.git iptv_checker_tool
           pip install -r iptv_checker_tool/requirements.txt
-          # Hancurkan folder .git bawaan tool agar Git utama tidak error
           rm -rf iptv_checker_tool/.git
 
       - name: 1️⃣ Run Aggregator (Download 14+ Sources)
-        run: |
-          # Menghasilkan file tv_channels.m3u (Bisa mencapai 12.000+ baris)
-          python aggregator.py
+        run: python aggregator.py
 
-      - name: 2️⃣ Run Filter (Buang VOD/Movie/Kategori Terlarang)
-        run: |
-          # Menghasilkan file tc_filtered.m3u (Jumlah baris berkurang drastis)
-          # Pastikan Anda sudah membuat file filter_playlist.py di repositori Anda!
-          python filter_playlist.py || echo "Peringatan: Script filter_playlist.py gagal atau tidak ditemukan"
+      - name: 2️⃣ Run Filter (Buang VOD/Movie)
+        run: python filter_playlist.py || echo "File filter_playlist.py tidak ditemukan, dilewati."
 
       - name: 3️⃣ Run IPTV Checker (Verifikasi Channel Hidup)
         run: |
-          # Mengecek file hasil filter dengan mode super ngebut (80 worker, 4 detik timeout, 0 retry)
-          # Ganti 'tc_filtered.m3u' menjadi 'tv_channels.m3u' jika Anda tidak memakai filter_playlist.py
-          python iptv_checker_tool/IPTV_checker.py tc_filtered.m3u -split -skip_screenshots -w 80 -t 4 -R 0
-          
-          # Rename file hasil (mendukung *working.m3u dan *working.m3u8)
+          python iptv_checker_tool/IPTV_checker.py tc_filtered.m3u -split -skip_screenshots -w 20 -t 4 -R 0
           mv *_working.m3u* tv_channels_final.m3u || echo "File working tidak ditemukan"
           
-          # Fallback pencegah error jika semua channel ternyata mati
           if [ ! -f tv_channels_final.m3u ]; then
-            echo "⚠️ File hasil checker tidak ditemukan. Membuat file kosong."
             touch tv_channels_final.m3u
           fi
 
-      - name: 🗄️ Buat File Backup ZIP (Mentahan & Log)
+      - name: 🗄️ Buat File Backup ZIP
         run: |
-          # Membungkus file m3u mentah, hasil filter, dead links, geoblocked, dan folder backup
           zip -r iptv_backup.zip tv_channels*.m3u* tc_filtered.m3u backup_files/ *_dead.m3u8 *_geoblocked.m3u8 || true
 
-      - name: 🌐 Upload ke Internet Archive (Live Playlist URL)
+      - name: 🌐 Upload ke Internet Archive (S3)
         env:
           IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
           IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
         run: |
-          # Bikin file konfigurasi IA secara paksa untuk melewati error otentikasi
-          echo "Mempersiapkan otentikasi Internet Archive..."
           mkdir -p ~/.config
           cat <<EOF > ~/.config/ia.ini
           [s3]
@@ -83,23 +80,19 @@ jobs:
           secret = $IA_SECRET_KEY
           EOF
           
-          # Tentukan nama Bucket/Item statis untuk TV Anda
           BUCKET_NAME="pl-x8a9bf2k4m-2026"
           
-          echo "Mengunggah tv_channels_final.m3u menggunakan IA CLI..."
+          echo "Mengunggah tv_channels_final.m3u ke Internet Archive..."
           ia upload $BUCKET_NAME tv_channels_final.m3u \
-            --metadata="title:VTPI" \
+            --metadata="title:IPV \
             --metadata="mediatype:data" \
-            --metadata="creator:REM-331" \
-            --metadata="description:Automated"
+            --metadata="creator:Aya"
 
       - name: 🏷️ Upload Backup ZIP ke GitHub Releases
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Ini token bawaan otomatis, tidak perlu disetting manual
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG_NAME="update-$(date +'%Y%m%d-%H%M')"
-          
-          echo "Membuat rilis GitHub baru: $TAG_NAME"
           gh release create "$TAG_NAME" iptv_backup.zip \
             --title "Daily IPTV Update $TAG_NAME" \
-            --notes "Update otomatis harian. Berisi file mentah, list channel yang mati (dead), geoblocked, dan hasil saringan."
+            --notes "Update otomatis. Sumber: GitLab. Filtered & Checked."
