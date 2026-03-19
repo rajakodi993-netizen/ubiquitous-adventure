@@ -63,21 +63,20 @@ jobs:
 
       - name: 🚀 Upload ke Internet Archive (Official CLI)
         env:
-          # Pastikan penamaan secret di GitHub sama persis seperti ini (tanpa spasi di awal/akhir)
+          # Alat 'ia' akan OTOMATIS mendeteksi dan menggunakan 2 variabel ini
           IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
           IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
         run: |
           BUCKET_NAME="pl-x8a9bf2k4m-2026"
           
           echo "Mengunggah file m3u menggunakan IA CLI..."
-          # Perintah ini otomatis membuat item jika belum ada dan mengunggah filenya
+          
+          # Bersih tanpa argumen kunci. Langsung upload dan pasang metadata.
           ia upload $BUCKET_NAME tv_channels_filtered.m3u \
-            --access-key="$IA_ACCESS_KEY" \
-            --secret-key="$IA_SECRET_KEY" \
             --metadata="title:IPTV Filtered Playlist" \
             --metadata="mediatype:data" \
-            --metadata="creator:Aditya Lika Ardiansya"
-
+            --metadata="creator:zzz"
+            
       - name: 🏷️ Upload Backup ZIP ke GitHub Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
