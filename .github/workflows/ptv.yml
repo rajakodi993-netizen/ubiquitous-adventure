@@ -55,21 +55,20 @@ jobs:
             touch tv_channels_filtered.m3u
           fi
           
-      - name: Commit and Push back to GitLab
+      - name: Commit and Push to GitHub
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Tambahkan semua file yang berubah
-          git add . || true
+          # SOLUSI ERROR 2: Jangan pakai 'git add .'. Sebutkan nama file secara spesifik 
+          # agar log txt dan file sampah tool tidak ikut terunggah.
+          git add tv_channels.m3u backup_files/ || true
+          git add tv_channels_filtered.m3u || true
           
-          # Lakukan commit
+          # (Opsional) Jika Anda ingin menyimpan file dead & geoblocked sebagai laporan
+          git add *_dead.m3u8 *_geoblocked.m3u8 || true
+          
           git commit -m "Auto-update & filter playlist [skip ci]" || echo "Tidak ada perubahan"
           
-          # 1. Tarik dan gabungkan riwayat terbaru dari GitLab agar sejajar
-          git pull origin main --rebase
-          
-          # 2. Lakukan push dengan aman
-          git push origin HEAD:main
-          git commit -m "Auto-update & filter playlist [skip ci]" || echo "Tidak ada perubahan"
+          # Push langsung ke repo GitHub ini sendiri!
           git push origin HEAD:main
