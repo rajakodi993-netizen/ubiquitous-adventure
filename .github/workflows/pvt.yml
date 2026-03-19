@@ -1,0 +1,148 @@
+name: 📡 IPTV Playlist Checker
+
+on:
+  workflow_dispatch:
+    inputs:
+      playlist_url:
+        description: "URL Playlist M3U"
+        required: true
+        default: "https://iptv-aggregate.vercel.app/tv_channels.m3u"
+      timeout:
+        description: "Timeout per channel (detik)"
+        required: true
+        default: "5"
+      workers:
+        description: "Workers concurrent (1-20)"
+        required: true
+        default: "20"
+      retries:
+        description: "Retry per channel (0-6)"
+        required: true
+        default: "1"
+      group:
+        description: "Filter group tertentu (kosongkan = semua group)"
+        required: false
+        default: ""
+
+  schedule:
+    - cron: "0 0 * * 0"   # Setiap Minggu pukul 00:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: 📺 Check Playlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # ~5.8 jam, aman di bawah batas 6 jam GHA
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Clone IPTVChecker
+        run: git clone --depth=1 https://github.com/NewsGuyTor/IPTVChecker.git
+
+      - name: Install dependencies
+        run: pip install -q -r IPTVChecker/requirements.txt
+
+      - name: Download playlist
+        run: |
+          URL="${{ github.event.inputs.playlist_url || 'https://iptv-aggregate.vercel.app/tv_channels.m3u' }}"
+          echo "⬇️  Mengunduh playlist dari $URL ..."
+          curl -fsSL "$URL" -o IPTVChecker/playlist.m3u
+          COUNT=$(grep -c '#EXTINF' IPTVChecker/playlist.m3u || echo 0)
+          echo "✅ $COUNT channel ditemukan"
+
+      - name: Jalankan IPTVChecker
+        run: |
+          cd IPTVChecker
+
+          TIMEOUT="${{ github.event.inputs.timeout  || '5'  }}"
+          WORKERS="${{ github.event.inputs.workers  || '20' }}"
+          RETRIES="${{ github.event.inputs.retries  || '1'  }}"
+          GROUP="${{ github.event.inputs.group }}"
+
+          ARGS="playlist.m3u -t $TIMEOUT -w $WORKERS -R $RETRIES -s -skip_screenshots -o result.csv -v"
+
+          # Tambahkan filter group jika diisi
+          if [ -n "$GROUP" ]; then
+            ARGS="$ARGS -g \"$GROUP\""
+            echo "🔍 Filter group: $GROUP"
+          fi
+
+          echo "🚀 Menjalankan: python IPTV_checker.py $ARGS"
+          eval python IPTV_checker.py $ARGS
+
+      - name: Pindahkan hasil ke folder output
+        run: |
+          mkdir -p output
+
+          for STATUS in working dead geoblocked; do
+            FILE=$(find IPTVChecker -name "*_${STATUS}.m3u*" 2>/dev/null | head -1)
+            if [ -n "$FILE" ]; then
+              cp "$FILE" "output/tv_channels_${STATUS}.m3u"
+              COUNT=$(grep -c '#EXTINF' "output/tv_channels_${STATUS}.m3u" || echo 0)
+              echo "  $STATUS: $COUNT channel"
+            fi
+          done
+
+          [ -f IPTVChecker/result.csv ] && cp IPTVChecker/result.csv output/result.csv
+
+          echo ""
+          echo "=== File Output ==="
+          ls -lh output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-results-${{ github.run_number }}
+          path: output/
+          retention-days: 14
+
+      - name: Commit hasil ke repo
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add output/
+
+          DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
+          COUNT=$(grep -c '#EXTINF' IPTVChecker/playlist.m3u || echo '?')
+          git diff --cached --quiet \
+            && echo "Tidak ada perubahan, skip commit." \
+            || git commit -m "🤖 IPTV Check — $DATE | $COUNT channels" && git push
+
+      - name: Tampilkan ringkasan
+        run: |
+          echo "## 📊 Hasil IPTV Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | Channel |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
+
+          TOTAL=0
+          for STATUS in working dead geoblocked; do
+            FILE="output/tv_channels_${STATUS}.m3u"
+            if [ -f "$FILE" ]; then
+              N=$(grep -c '#EXTINF' "$FILE" || echo 0)
+              TOTAL=$((TOTAL + N))
+              case $STATUS in
+                working)    LABEL="✅ Working"    ;;
+                dead)       LABEL="❌ Dead"       ;;
+                geoblocked) LABEL="🌍 Geoblocked" ;;
+              esac
+              echo "| $LABEL | $N |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          echo "| **Total** | **$TOTAL** |" >> "$GITHUB_STEP_SUMMARY"
