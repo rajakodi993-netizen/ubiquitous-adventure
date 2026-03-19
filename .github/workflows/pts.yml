@@ -1,0 +1,189 @@
+name: 🧪 IPTV Dry Test (50 channel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      playlist_url:
+        description: "URL Playlist M3U"
+        required: true
+        default: "https://iptv-aggregate.vercel.app/tv_channels.m3u"
+      sample_size:
+        description: "Jumlah channel untuk test"
+        required: true
+        default: "50"
+      workers:
+        description: "Workers concurrent"
+        required: true
+        default: "10"
+      timeout:
+        description: "Timeout per channel (detik)"
+        required: true
+        default: "5"
+
+jobs:
+  dry-test:
+    name: 🧪 Dry Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Clone IPTVChecker
+        run: git clone --depth=1 https://github.com/NewsGuyTor/IPTVChecker.git
+
+      - name: Install dependencies
+        run: pip install -q -r IPTVChecker/requirements.txt
+
+      - name: Download playlist asli
+        run: |
+          URL="${{ github.event.inputs.playlist_url }}"
+          echo "⬇️  Mengunduh dari $URL ..."
+          curl -fsSL "$URL" -o full_playlist.m3u
+          TOTAL=$(grep -c '#EXTINF' full_playlist.m3u || echo 0)
+          echo "✅ Total channel di playlist: $TOTAL"
+
+      - name: Ambil ${{ github.event.inputs.sample_size }} channel sebagai sample
+        run: |
+          SAMPLE="${{ github.event.inputs.sample_size }}"
+          python3 - <<EOF
+          import re
+
+          SAMPLE = int("$SAMPLE")
+
+          with open("full_playlist.m3u", encoding="utf-8", errors="ignore") as f:
+              lines = f.readlines()
+
+          out = ["#EXTM3U\n"]
+          count = 0
+          i = 0
+
+          # Skip header line
+          while i < len(lines) and not lines[i].startswith("#EXTINF"):
+              i += 1
+
+          while i < len(lines) and count < SAMPLE:
+              line = lines[i]
+              if line.startswith("#EXTINF"):
+                  # Ambil EXTINF + URL berikutnya
+                  extinf = line
+                  i += 1
+                  # Skip baris kosong/komentar sampai ketemu URL
+                  while i < len(lines) and (lines[i].startswith("#") or lines[i].strip() == ""):
+                      i += 1
+                  if i < len(lines) and lines[i].strip():
+                      out.append(extinf)
+                      out.append(lines[i])
+                      count += 1
+              i += 1
+
+          with open("IPTVChecker/sample.m3u", "w", encoding="utf-8") as f:
+              f.writelines(out)
+
+          print(f"✅ Sample dibuat: {count} channel")
+
+          # Tampilkan preview
+          print("\n── Preview 5 channel pertama ──────────────")
+          shown = 0
+          for line in out:
+              if line.startswith("#EXTINF"):
+                  name_match = re.search(r',(.+)$', line.strip())
+                  group_match = re.search(r'group-title="([^"]*)"', line)
+                  name  = name_match.group(1)  if name_match  else "?"
+                  group = group_match.group(1) if group_match else "?"
+                  print(f"  [{group}] {name}")
+                  shown += 1
+                  if shown >= 5:
+                      break
+          print("────────────────────────────────────────────")
+          EOF
+
+      - name: Jalankan IPTVChecker pada sample
+        run: |
+          cd IPTVChecker
+          python IPTV_checker.py sample.m3u \
+            -t "${{ github.event.inputs.timeout }}" \
+            -w "${{ github.event.inputs.workers }}" \
+            -R 1 \
+            -s \
+            -skip_screenshots \
+            -o result.csv \
+            -v
+
+      - name: Tampilkan hasil dry test
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════"
+          echo "         HASIL DRY TEST"
+          echo "══════════════════════════════════════════"
+
+          TOTAL=0
+          for STATUS in working dead geoblocked; do
+            FILE=$(find IPTVChecker -name "*_${STATUS}.m3u*" 2>/dev/null | head -1)
+            if [ -n "$FILE" ]; then
+              N=$(grep -c '#EXTINF' "$FILE" || echo 0)
+              TOTAL=$((TOTAL + N))
+              case $STATUS in
+                working)    ICON="✅" ;;
+                dead)       ICON="❌" ;;
+                geoblocked) ICON="🌍" ;;
+              esac
+              echo "  $ICON $STATUS: $N channel"
+            fi
+          done
+
+          echo "──────────────────────────────────────────"
+          echo "  📊 Total diproses: $TOTAL channel"
+          echo "══════════════════════════════════════════"
+
+      - name: Ringkasan di GitHub Actions Summary
+        run: |
+          echo "## 🧪 Hasil Dry Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Playlist:** ${{ github.event.inputs.playlist_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Sample:** ${{ github.event.inputs.sample_size }} channel" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status | Channel |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
+
+          TOTAL=0
+          for STATUS in working dead geoblocked; do
+            FILE=$(find IPTVChecker -name "*_${STATUS}.m3u*" 2>/dev/null | head -1)
+            if [ -n "$FILE" ]; then
+              N=$(grep -c '#EXTINF' "$FILE" || echo 0)
+              TOTAL=$((TOTAL + N))
+              case $STATUS in
+                working)    LABEL="✅ Working"    ;;
+                dead)       LABEL="❌ Dead"       ;;
+                geoblocked) LABEL="🌍 Geoblocked" ;;
+              esac
+              echo "| $LABEL | $N |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          echo "| **Total** | **$TOTAL** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ✅ Jika hasil masuk akal, workflow utama siap dijalankan untuk full 12.000 channel." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload hasil dry test
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-test-results
+          path: |
+            IPTVChecker/sample.m3u
+            IPTVChecker/result.csv
+            IPTVChecker/*_working.m3u*
+            IPTVChecker/*_dead.m3u*
+            IPTVChecker/*_geoblocked.m3u*
+          retention-days: 3
