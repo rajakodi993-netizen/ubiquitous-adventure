@@ -1,0 +1,88 @@
+name: DRY RUN - S3 & Release Test
+
+on:
+  workflow_dispatch: # Hanya jalan kalau tombol diklik manual
+
+jobs:
+  test-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Wajib untuk bikin Release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg zip
+
+      - name: Install Python Dependencies
+        run: pip install requests python-dotenv aiohttp
+
+      - name: Setup IPTV Checker
+        run: |
+          git clone https://github.com/kristofferR/IPTVChecker-Python.git iptv_checker_tool
+          pip install -r iptv_checker_tool/requirements.txt
+          rm -rf iptv_checker_tool/.git
+
+      - name: 🧪 BUAT DATA MOCK (TIRUAN)
+        run: |
+          # Bikin file m3u palsu dengan 2 channel saja biar cepat
+          cat <<EOF > tv_channels.m3u
+          #EXTM3U
+          #EXTINF:-1 group-title="Test",Channel Hidup
+          https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+          #EXTINF:-1 group-title="Test",Channel Mati
+          http://link-ini-pasti-mati-12345.com/stream.m3u8
+          EOF
+          
+          # Bikin folder backup palsu agar script ZIP tidak error
+          mkdir -p backup_files
+          echo "Ini file backup palsu" > backup_files/dummy.txt
+
+      - name: Run IPTV Checker & Filter
+        run: |
+          # Checker hanya akan mengecek 2 channel di atas
+          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 2 -t 4 -R 0
+          
+          mv *_working.m3u* tv_channels_filtered.m3u || echo "File working tidak ditemukan"
+          
+          if [ ! -f tv_channels_filtered.m3u ]; then
+            echo "⚠️ File hasil filter tidak ditemukan. Membuat file kosong."
+            touch tv_channels_filtered.m3u
+          fi
+
+      - name: 📦 Buat File ZIP
+        run: |
+          zip -r iptv_backup.zip tv_channels*.m3u* backup_files/ *_dead.m3u8 *_geoblocked.m3u8 || true
+
+      - name: 🚀 Upload ke Internet Archive (S3)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.IA_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.IA_SECRET_KEY }}
+        run: |
+          # PERHATIAN: Ganti 'adit-iptv-test' ini dengan nama apa saja asal belum pernah dipakai orang di dunia
+          BUCKET_NAME="adit-iptv-test-12345"
+          
+          echo "Test Upload ke IA Bucket: $BUCKET_NAME"
+          aws s3 cp tv_channels_filtered.m3u s3://$BUCKET_NAME/tv_channels_filtered.m3u \
+            --endpoint-url https://s3.us.archive.org \
+            --acl public-read
+
+      - name: 🏷️ Upload Backup ZIP ke GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="test-run-$(date +'%Y%m%d-%H%M')"
+          
+          echo "Membuat rilis test: $TAG_NAME"
+          gh release create "$TAG_NAME" iptv_backup.zip \
+            --title "DRY RUN TEST $TAG_NAME" \
+            --notes "Ini cuma tes pipeline. Abaikan isinya."
