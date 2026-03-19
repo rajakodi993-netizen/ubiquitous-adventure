@@ -1,74 +1,105 @@
-name: IPTV Aggregator & Checker (GitLab Sync)
+name: IPTV Master Pipeline (Aggregator -> Checker -> S3/Release)
 
 on:
   schedule:
-    - cron: '0 0,12 * * *' # Jalan otomatis setiap jam 00:00 dan 12:00 UTC
+    # Berjalan otomatis 2 kali sehari (Jam 00:00 dan 12:00 UTC / Jam 07:00 dan 19:00 WIB)
+    - cron: '0 0,12 * * *'
   workflow_dispatch: # Tombol jalankan manual
 
 jobs:
-  update-playlist:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Wajib agar bot diizinkan membuat rilis GitHub
 
     steps:
-      # --- 1. TARIK KODE DARI GITLAB ---
-      - name: Tarik Repository dari GitLab
-        env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-        run: |
-          # Menggunakan token untuk clone dari GitLab ke folder saat ini (.)
-          git clone https://oauth2:${GITLAB_TOKEN}@gitlab.com/aditya-lika-ardiansyah/iptv-aggregate.git .
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
 
-      # --- 2. PERSIAPAN LINGKUNGAN ---
-      - name: Set up Python 3.10
+      - name: ⚙️ Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies (FFmpeg)
+      - name: 🛠️ Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg zip
 
-      - name: Install Python Dependencies
-        run: pip install requests python-dotenv aiohttp
+      - name: 📦 Install Python Dependencies & IA CLI
+        run: |
+          pip install requests python-dotenv aiohttp 
+          pip install internetarchive
 
-      - name: Setup IPTV Checker
+      - name: 🚀 Setup IPTV Checker Tool
         run: |
           git clone https://github.com/kristofferR/IPTVChecker-Python.git iptv_checker_tool
           pip install -r iptv_checker_tool/requirements.txt
+          # Hancurkan folder .git bawaan tool agar Git utama tidak error
+          rm -rf iptv_checker_tool/.git
 
-      # --- 3. EKSEKUSI SCRIPT (Yang ditarik dari GitLab) ---
-      - name: Run Aggregator
-        run: python aggregator.py
-
-      - name: Run IPTV Checker & Filter
+      - name: 1️⃣ Run Aggregator (Download 14+ Sources)
         run: |
-          # Jalankan checker dengan mode agresif
-          python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 20 -t 4 -R 0
+          # Menghasilkan file tv_channels.m3u (Bisa mencapai 12.000+ baris)
+          python aggregator.py
+
+      - name: 2️⃣ Run Filter (Buang VOD/Movie/Kategori Terlarang)
+        run: |
+          # Menghasilkan file tc_filtered.m3u (Jumlah baris berkurang drastis)
+          # Pastikan Anda sudah membuat file filter_playlist.py di repositori Anda!
+          python filter_playlist.py || echo "Peringatan: Script filter_playlist.py gagal atau tidak ditemukan"
+
+      - name: 3️⃣ Run IPTV Checker (Verifikasi Channel Hidup)
+        run: |
+          # Mengecek file hasil filter dengan mode super ngebut (80 worker, 4 detik timeout, 0 retry)
+          # Ganti 'tc_filtered.m3u' menjadi 'tv_channels.m3u' jika Anda tidak memakai filter_playlist.py
+          python iptv_checker_tool/IPTV_checker.py tc_filtered.m3u -split -skip_screenshots -w 80 -t 4 -R 0
           
-          # Rename file hasil (sekarang mendukung *working.m3u8 maupun *working.m3u)
-          mv *_working.m3u* tv_channels_filtered.m3u || echo "File working tidak ditemukan via mv"
+          # Rename file hasil (mendukung *working.m3u dan *working.m3u8)
+          mv *_working.m3u* tv_channels_final.m3u || echo "File working tidak ditemukan"
           
-          # Fallback file kosong jika semua channel ternyata mati/gagal
-          if [ ! -f tv_channels_filtered.m3u ]; then
-            echo "⚠️ File hasil filter tidak ditemukan. Membuat file kosong agar Git tidak error."
-            touch tv_channels_filtered.m3u
+          # Fallback pencegah error jika semua channel ternyata mati
+          if [ ! -f tv_channels_final.m3u ]; then
+            echo "⚠️ File hasil checker tidak ditemukan. Membuat file kosong."
+            touch tv_channels_final.m3u
           fi
-          
-      - name: Commit and Push to GitHub
+
+      - name: 🗄️ Buat File Backup ZIP (Mentahan & Log)
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          # Membungkus file m3u mentah, hasil filter, dead links, geoblocked, dan folder backup
+          zip -r iptv_backup.zip tv_channels*.m3u* tc_filtered.m3u backup_files/ *_dead.m3u8 *_geoblocked.m3u8 || true
+
+      - name: 🌐 Upload ke Internet Archive (Live Playlist URL)
+        env:
+          IA_ACCESS_KEY: ${{ secrets.IA_ACCESS_KEY }}
+          IA_SECRET_KEY: ${{ secrets.IA_SECRET_KEY }}
+        run: |
+          # Bikin file konfigurasi IA secara paksa untuk melewati error otentikasi
+          echo "Mempersiapkan otentikasi Internet Archive..."
+          mkdir -p ~/.config
+          cat <<EOF > ~/.config/ia.ini
+          [s3]
+          access = $IA_ACCESS_KEY
+          secret = $IA_SECRET_KEY
+          EOF
           
-          # SOLUSI ERROR 2: Jangan pakai 'git add .'. Sebutkan nama file secara spesifik 
-          # agar log txt dan file sampah tool tidak ikut terunggah.
-          git add tv_channels.m3u backup_files/ || true
-          git add tv_channels_filtered.m3u || true
+          # Tentukan nama Bucket/Item statis untuk TV Anda
+          BUCKET_NAME="pl-x8a9bf2k4m-2026"
           
-          # (Opsional) Jika Anda ingin menyimpan file dead & geoblocked sebagai laporan
-          git add *_dead.m3u8 *_geoblocked.m3u8 || true
+          echo "Mengunggah tv_channels_final.m3u menggunakan IA CLI..."
+          ia upload $BUCKET_NAME tv_channels_final.m3u \
+            --metadata="title:VTPI" \
+            --metadata="mediatype:data" \
+            --metadata="creator:REM-331" \
+            --metadata="description:Automated"
+
+      - name: 🏷️ Upload Backup ZIP ke GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Ini token bawaan otomatis, tidak perlu disetting manual
+        run: |
+          TAG_NAME="update-$(date +'%Y%m%d-%H%M')"
           
-          git commit -m "Auto-update & filter playlist [skip ci]" || echo "Tidak ada perubahan"
-          
-          # Push langsung ke repo GitHub ini sendiri!
-          git push origin HEAD:main
+          echo "Membuat rilis GitHub baru: $TAG_NAME"
+          gh release create "$TAG_NAME" iptv_backup.zip \
+            --title "Daily IPTV Update $TAG_NAME" \
+            --notes "Update otomatis harian. Berisi file mentah, list channel yang mati (dead), geoblocked, dan hasil saringan."
