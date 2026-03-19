@@ -1,13 +1,13 @@
 name: DRY RUN - S3 & Release Test
 
 on:
-  workflow_dispatch: # Hanya jalan kalau tombol diklik manual
+  workflow_dispatch: # Hanya jalan kalau tombol Run workflow diklik manual
 
 jobs:
   test-pipeline:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Wajib untuk bikin Release
+      contents: write # Wajib untuk bikin Release di GitHub
 
     steps:
       - name: Checkout repository
@@ -30,11 +30,13 @@ jobs:
         run: |
           git clone https://github.com/kristofferR/IPTVChecker-Python.git iptv_checker_tool
           pip install -r iptv_checker_tool/requirements.txt
+          
+          # Hapus folder .git bawaan tool agar Git Anda tidak error
           rm -rf iptv_checker_tool/.git
 
       - name: 🧪 BUAT DATA MOCK (TIRUAN)
         run: |
-          # Bikin file m3u palsu dengan 2 channel saja biar cepat
+          # Memotong tahap download asli, langsung bikin 2 channel palsu
           cat <<EOF > tv_channels.m3u
           #EXTM3U
           #EXTINF:-1 group-title="Test",Channel Hidup
@@ -43,13 +45,13 @@ jobs:
           http://link-ini-pasti-mati-12345.com/stream.m3u8
           EOF
           
-          # Bikin folder backup palsu agar script ZIP tidak error
+          # Bikin folder backup palsu agar script ZIP berjalan lancar
           mkdir -p backup_files
           echo "Ini file backup palsu" > backup_files/dummy.txt
 
       - name: Run IPTV Checker & Filter
         run: |
-          # Checker hanya akan mengecek 2 channel di atas
+          # Cuma mengecek 2 channel di atas. Pasti selesai dalam hitungan detik.
           python iptv_checker_tool/IPTV_checker.py tv_channels.m3u -split -skip_screenshots -w 2 -t 4 -R 0
           
           mv *_working.m3u* tv_channels_filtered.m3u || echo "File working tidak ditemukan"
@@ -61,6 +63,7 @@ jobs:
 
       - name: 📦 Buat File ZIP
         run: |
+          # Bungkus semua m3u, dead link, dan backup ke dalam satu ZIP
           zip -r iptv_backup.zip tv_channels*.m3u* backup_files/ *_dead.m3u8 *_geoblocked.m3u8 || true
 
       - name: 🚀 Upload ke Internet Archive (S3)
@@ -68,10 +71,13 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.IA_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.IA_SECRET_KEY }}
         run: |
-          # PERHATIAN: Ganti 'adit-iptv-test' ini dengan nama apa saja asal belum pernah dipakai orang di dunia
-          BUCKET_NAME="adit-iptv-test-12345"
+          # NAMA BUCKET ACAK (Statis agar URL di TV Anda tidak perlu diganti-ganti)
+          BUCKET_NAME="pl-x8a9bf2k4m-2026"
           
-          echo "Test Upload ke IA Bucket: $BUCKET_NAME"
+          echo "Membuat bucket/item baru di IA jika belum ada: $BUCKET_NAME..."
+          aws s3 mb s3://$BUCKET_NAME --endpoint-url https://s3.us.archive.org || true
+          
+          echo "Mengunggah file m3u ke bucket..."
           aws s3 cp tv_channels_filtered.m3u s3://$BUCKET_NAME/tv_channels_filtered.m3u \
             --endpoint-url https://s3.us.archive.org \
             --acl public-read
