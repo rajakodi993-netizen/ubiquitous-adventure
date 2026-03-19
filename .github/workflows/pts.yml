@@ -20,6 +20,9 @@ on:
         required: true
         default: "5"
 
+permissions:
+  contents: write
+
 jobs:
   dry-test:
     name: 🧪 Dry Test
@@ -69,17 +72,14 @@ jobs:
           count = 0
           i = 0
 
-          # Skip header line
           while i < len(lines) and not lines[i].startswith("#EXTINF"):
               i += 1
 
           while i < len(lines) and count < SAMPLE:
               line = lines[i]
               if line.startswith("#EXTINF"):
-                  # Ambil EXTINF + URL berikutnya
                   extinf = line
                   i += 1
-                  # Skip baris kosong/komentar sampai ketemu URL
                   while i < len(lines) and (lines[i].startswith("#") or lines[i].strip() == ""):
                       i += 1
                   if i < len(lines) and lines[i].strip():
@@ -93,12 +93,11 @@ jobs:
 
           print(f"✅ Sample dibuat: {count} channel")
 
-          # Tampilkan preview
           print("\n── Preview 5 channel pertama ──────────────")
           shown = 0
           for line in out:
               if line.startswith("#EXTINF"):
-                  name_match = re.search(r',(.+)$', line.strip())
+                  name_match  = re.search(r',(.+)$', line.strip())
                   group_match = re.search(r'group-title="([^"]*)"', line)
                   name  = name_match.group(1)  if name_match  else "?"
                   group = group_match.group(1) if group_match else "?"
@@ -121,33 +120,40 @@ jobs:
             -o result.csv \
             -v
 
-      - name: Tampilkan hasil dry test
+      - name: Pindahkan hasil ke folder output/dry-test
         run: |
-          echo ""
-          echo "══════════════════════════════════════════"
-          echo "         HASIL DRY TEST"
-          echo "══════════════════════════════════════════"
+          mkdir -p output/dry-test
 
-          TOTAL=0
           for STATUS in working dead geoblocked; do
             FILE=$(find IPTVChecker -name "*_${STATUS}.m3u*" 2>/dev/null | head -1)
             if [ -n "$FILE" ]; then
-              N=$(grep -c '#EXTINF' "$FILE" || echo 0)
-              TOTAL=$((TOTAL + N))
-              case $STATUS in
-                working)    ICON="✅" ;;
-                dead)       ICON="❌" ;;
-                geoblocked) ICON="🌍" ;;
-              esac
-              echo "  $ICON $STATUS: $N channel"
+              cp "$FILE" "output/dry-test/sample_${STATUS}.m3u"
+              N=$(grep -c '#EXTINF' "output/dry-test/sample_${STATUS}.m3u" || echo 0)
+              echo "  ✅ $STATUS: $N channel"
             fi
           done
 
-          echo "──────────────────────────────────────────"
-          echo "  📊 Total diproses: $TOTAL channel"
-          echo "══════════════════════════════════════════"
+          [ -f IPTVChecker/result.csv ] && cp IPTVChecker/result.csv output/dry-test/result.csv
+          cp IPTVChecker/sample.m3u output/dry-test/sample_input.m3u
 
-      - name: Ringkasan di GitHub Actions Summary
+          echo ""
+          ls -lh output/dry-test/
+
+      - name: Commit hasil ke repo
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add output/dry-test/
+
+          DATE=$(date -u +'%Y-%m-%d %H:%M UTC')
+          SAMPLE="${{ github.event.inputs.sample_size }}"
+
+          git diff --cached --quiet \
+            && echo "Tidak ada perubahan, skip commit." \
+            || git commit -m "🧪 Dry Test — $DATE | $SAMPLE channel" && git push
+
+      - name: Tampilkan ringkasan
         run: |
           echo "## 🧪 Hasil Dry Test" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -159,8 +165,8 @@ jobs:
 
           TOTAL=0
           for STATUS in working dead geoblocked; do
-            FILE=$(find IPTVChecker -name "*_${STATUS}.m3u*" 2>/dev/null | head -1)
-            if [ -n "$FILE" ]; then
+            FILE="output/dry-test/sample_${STATUS}.m3u"
+            if [ -f "$FILE" ]; then
               N=$(grep -c '#EXTINF' "$FILE" || echo 0)
               TOTAL=$((TOTAL + N))
               case $STATUS in
@@ -174,16 +180,11 @@ jobs:
 
           echo "| **Total** | **$TOTAL** |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> ✅ Jika hasil masuk akal, workflow utama siap dijalankan untuk full 12.000 channel." >> "$GITHUB_STEP_SUMMARY"
+          echo "> ✅ Hasil tersimpan di \`output/dry-test/\` dalam repo." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload hasil dry test
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: dry-test-results
-          path: |
-            IPTVChecker/sample.m3u
-            IPTVChecker/result.csv
-            IPTVChecker/*_working.m3u*
-            IPTVChecker/*_dead.m3u*
-            IPTVChecker/*_geoblocked.m3u*
+          path: output/dry-test/
           retention-days: 3
