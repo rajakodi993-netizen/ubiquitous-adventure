@@ -1,0 +1,6 @@
+﻿Playlist,Channel Number,Total Channels in Playlist,Channel Status,Group Name,Channel Name,Channel ID,Codec,Bit Rate (kbps),Resolution,Frame Rate,Audio,Error Reason
+sample.m3u,1,5,Dead,LALAJO / INDONESIA TV,RCTI,index.mpd,Unknown,Unknown,Unknown,,Unknown,Insufficient data received
+sample.m3u,5,5,Dead,LALAJO / INDONESIA TV,GTV,index.mpd,Unknown,Unknown,Unknown,,Unknown,Insufficient data received
+sample.m3u,3,5,Dead,LALAJO / INDONESIA TV,MNCTV,index.mpd,Unknown,Unknown,Unknown,,Unknown,Insufficient data received
+sample.m3u,2,5,Alive,LALAJO / INDONESIA TV,RCTI LIVE SPORTS,index.m3u8,Unknown,N/A,Unknown,,Unknown,
+sample.m3u,4,5,Alive,LALAJO / INDONESIA TV,MNCTV WORLD,live.php?mac=00:1B:79:F0:81:7F&stream=1919420&extension=ts&play_token=JRjuGlw0qo,H264,N/A,720p,50,128 kbps AAC,

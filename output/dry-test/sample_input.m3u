@@ -1,0 +1,11 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="RCTI.id" tvg-name="RCTI" tvg-logo="https://mimipipi22.github.io/logo/nasional/rcti.jpg" group-title="LALAJO / INDONESIA TV", RCTI
+https://d2xz2v5wuvgur6.cloudfront.net/out/v1/997ce8767b604fae9fce05379b3b8b3a/index.mpd
+#EXTINF:-1 tvg-id="RCTI.id" tvg-name="RCTI" tvg-logo="https://mimipipi22.github.io/logo/nasional/rcti.jpg" group-title="LALAJO / INDONESIA TV",RCTI LIVE SPORTS
+http://103.66.62.83:8000/play/a00v/index.m3u8
+#EXTINF:-1 tvg-id="MNCTV.id" tvg-name="MNCTV" tvg-name="" tvg-logo="https://mimipipi22.github.io/logo/nasional/mnctv.jpg" group-title="LALAJO / INDONESIA TV",MNCTV
+https://d2xz2v5wuvgur6.cloudfront.net/out/v1/d6b026ad50f14b7f9af5ddd5450007d4/index.mpd
+#EXTINF:-1 tvg-id="MNCTV.id" tvg-name="MNCTV" tvg-name="" tvg-logo="https://mimipipi22.github.io/logo/nasional/mnctvw.jpg" group-title="LALAJO / INDONESIA TV",MNCTV WORLD
+http://slayerteam.in.rs:80/play/live.php?mac=00:1B:79:F0:81:7F&stream=1919420&extension=ts&play_token=JRjuGlw0qo
+#EXTINF:-1 tvg-id="GTV.id" tvg-name="GTV" tvg-logo="https://mimipipi22.github.io/logo/nasional/gtv.jpg" group-title="LALAJO / INDONESIA TV",GTV
+https://d2tjypxxy769fn.cloudfront.net/out/v1/b8b9b1d5f80f45649b4a3619291551ab/index.mpd
